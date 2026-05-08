@@ -2,6 +2,7 @@ mod audio;
 mod config;
 mod focus;
 mod groq;
+mod history;
 mod input;
 
 use audio::RecorderHandle;
@@ -191,6 +192,31 @@ fn test_microphone(device_name: Option<String>) -> Result<f32, String> {
     audio::test_mic(device_name.as_deref())
 }
 
+#[tauri::command]
+fn list_transcript_history() -> Vec<history::HistoryItem> {
+    history::load_all()
+}
+
+#[tauri::command]
+fn add_transcript_history(text: String, paste_result: String) -> Result<history::HistoryItem, String> {
+    history::add(&text, &paste_result)
+}
+
+#[tauri::command]
+fn copy_transcript(text: String) -> Result<(), String> {
+    input::write_clipboard(&text)
+}
+
+#[tauri::command]
+fn delete_transcript_history(id: String) -> Result<(), String> {
+    history::delete(&id)
+}
+
+#[tauri::command]
+fn clear_transcript_history() -> Result<(), String> {
+    history::clear()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -220,6 +246,11 @@ pub fn run() {
             play_chime,
             list_audio_devices,
             test_microphone,
+            list_transcript_history,
+            add_transcript_history,
+            copy_transcript,
+            delete_transcript_history,
+            clear_transcript_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
