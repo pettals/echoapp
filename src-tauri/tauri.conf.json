@@ -10,21 +10,38 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Echo",
-        "width": 380,
-        "height": 520,
+        "width": 720,
+        "height": 540,
+        "minWidth": 600,
+        "minHeight": 420,
         "resizable": true,
         "alwaysOnTop": true,
         "decorations": true,
         "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "skipTaskbar": false
+      },
+      {
+        "label": "indicator",
+        "title": "",
+        "width": 64,
+        "height": 64,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://api.groq.com; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' https://api.groq.com https://huggingface.co; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

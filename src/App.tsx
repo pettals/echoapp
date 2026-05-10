@@ -2,12 +2,11 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
 import Settings from "./components/Settings";
 import "./App.css";
 
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
-type ActiveTab = "dictate" | "history";
+type ActiveTab = "dictate" | "history" | "settings";
 
 interface AppConfig {
   groq_api_key: string;
@@ -16,11 +15,8 @@ interface AppConfig {
   cleanup_model: string;
   cleanup_enabled: boolean;
   input_device: string | null;
-}
-
-interface ScreenSize {
-  width: number;
-  height: number;
+  model_provider: "api" | "local";
+  local_model_size: "small" | "medium";
 }
 
 interface HistoryItem {
@@ -30,22 +26,98 @@ interface HistoryItem {
   paste_result: string;
 }
 
-const PILL_WIDTH = 200;
-const PILL_HEIGHT = 56;
-const NORMAL_WIDTH = 380;
-const NORMAL_HEIGHT = 520;
+const WINDOW_LABEL = getCurrentWindow().label;
 
 function App() {
+  if (WINDOW_LABEL === "indicator") {
+    return <DockIndicator />;
+  }
+  return <MainApp />;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Dock Indicator (tiny always-visible window above the dock)        */
+/* ------------------------------------------------------------------ */
+
+function DockIndicator() {
+  const [recording, setRecording] = useState(false);
+  const [level, setLevel] = useState(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const poll = setInterval(async () => {
+      if (!mounted) return;
+      try {
+        const isRec = await invoke<boolean>("is_recording");
+        setRecording(isRec);
+      } catch { /* ignore */ }
+    }, 200);
+
+    return () => {
+      mounted = false;
+      clearInterval(poll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!recording) {
+      setLevel(0);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
+    }
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const l = await invoke<number>("get_recording_level");
+        setLevel(l);
+      } catch { /* ignore */ }
+    }, 60);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [recording]);
+
+  const scale = recording ? 1 + level * 0.6 : 1;
+  const hue = recording ? level * 60 : 0;
+  const glowOpacity = recording ? 0.4 + level * 0.5 : 0.25;
+  const glowSize = recording ? 8 + level * 20 : 6;
+
+  return (
+    <div className="dock-indicator" data-tauri-drag-region>
+      <div
+        className={`dock-dot ${recording ? "dock-dot--recording" : ""}`}
+        style={{
+          transform: `scale(${scale})`,
+          filter: recording ? `hue-rotate(${hue}deg)` : "none",
+          boxShadow: `0 0 ${glowSize}px rgba(229,255,92,${glowOpacity}), 0 0 ${glowSize * 2.5}px rgba(229,255,92,${glowOpacity * 0.4})`,
+        }}
+      />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main Echo App (sidebar + content)                                 */
+/* ------------------------------------------------------------------ */
+
+function MainApp() {
   const [appState, setAppState] = useState<AppState>("idle");
   const [activeTab, setActiveTab] = useState<ActiveTab>("dictate");
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const registeredShortcut = useRef<string | null>(null);
-  const normalPosition = useRef<{ x: number; y: number } | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   const getAudioCtx = useCallback((): AudioContext | null => {
@@ -69,8 +141,6 @@ function App() {
   }, []);
 
   const playChime = useCallback(async () => {
-    // Prefer the native OS chime (more reliable than WKWebView autoplay
-    // policies). Fall back to Web Audio if the native call fails.
     try {
       await invoke("play_chime");
       return;
@@ -99,46 +169,9 @@ function App() {
       osc.stop(start + duration + 0.05);
     };
 
-    // Pleasant two-note "ding" (C6 -> E6)
     playTone(1046.5, now, 0.18);
     playTone(1318.51, now + 0.09, 0.28);
   }, [getAudioCtx]);
-
-  const switchToPillMode = useCallback(async () => {
-    const win = getCurrentWindow();
-    try {
-      const pos = await win.outerPosition();
-      normalPosition.current = { x: pos.x, y: pos.y };
-    } catch {
-      normalPosition.current = { x: 100, y: 100 };
-    }
-
-    try {
-      const screen = await invoke<ScreenSize>("get_screen_size");
-      const scaleFactor = await win.scaleFactor();
-      const logicalWidth = screen.width / scaleFactor;
-      const x = logicalWidth - PILL_WIDTH - 16;
-      const y = 16;
-      await win.setSize(new LogicalSize(PILL_WIDTH, PILL_HEIGHT));
-      await win.setPosition(new LogicalPosition(x, y));
-    } catch (e) {
-      console.error("Failed to switch to pill mode:", e);
-    }
-  }, []);
-
-  const switchToNormalMode = useCallback(async () => {
-    const win = getCurrentWindow();
-    try {
-      await win.setSize(new LogicalSize(NORMAL_WIDTH, NORMAL_HEIGHT));
-      if (normalPosition.current) {
-        await win.setPosition(
-          new LogicalPosition(normalPosition.current.x, normalPosition.current.y)
-        );
-      }
-    } catch (e) {
-      console.error("Failed to switch to normal mode:", e);
-    }
-  }, []);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -157,30 +190,24 @@ function App() {
       if (recording) return;
 
       const cfg = await invoke<AppConfig>("get_config");
-      if (!cfg.groq_api_key) {
-        setShowSettings(true);
+      if (cfg.model_provider === "api" && !cfg.groq_api_key) {
+        setActiveTab("settings");
         return;
       }
 
-      // Capture the previously-focused app FIRST, before any UI / window
-      // manipulation. Resizing or repositioning the always-on-top window can
-      // briefly raise Echo on macOS, which would cause us to capture
-      // ourselves and skip the auto-paste.
       await invoke("capture_focus");
       await invoke("start_recording");
 
       setAppState("recording");
       setTranscript("");
       setErrorMsg("");
-      await switchToPillMode();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setErrorMsg(msg);
       setAppState("error");
-      await switchToNormalMode();
       setTimeout(() => setAppState("idle"), 5000);
     }
-  }, [switchToPillMode, switchToNormalMode]);
+  }, []);
 
   const handleStopAndPaste = useCallback(async () => {
     try {
@@ -190,15 +217,13 @@ function App() {
       setAppState("processing");
       const audioPath = await invoke<string>("stop_recording");
 
-      await switchToNormalMode();
-
       const rawText = await invoke<string>("transcribe_audio", {
         audioPath,
       });
 
       let finalText = rawText;
       const cfg = await invoke<AppConfig>("get_config");
-      if (cfg.cleanup_enabled) {
+      if (cfg.cleanup_enabled && cfg.model_provider === "api") {
         finalText = await invoke<string>("cleanup_text", { text: rawText });
       }
 
@@ -229,10 +254,9 @@ function App() {
       const msg = e instanceof Error ? e.message : String(e);
       setErrorMsg(msg);
       setAppState("error");
-      await switchToNormalMode();
       setTimeout(() => setAppState("idle"), 5000);
     }
-  }, [switchToNormalMode, playChime]);
+  }, [playChime]);
 
   const registerShortcut = useCallback(
     async (shortcut: string) => {
@@ -268,8 +292,8 @@ function App() {
   useEffect(() => {
     loadConfig().then((cfg) => {
       if (cfg) {
-        if (!cfg.groq_api_key) {
-          setShowSettings(true);
+        if (cfg.model_provider === "api" && !cfg.groq_api_key) {
+          setActiveTab("settings");
         }
         registerShortcut(cfg.shortcut);
       }
@@ -313,190 +337,195 @@ function App() {
   const handleSaveSettings = async (newConfig: AppConfig) => {
     await invoke("save_config", { config: newConfig });
     setConfig(newConfig);
-    setShowSettings(false);
+    setActiveTab("dictate");
     await registerShortcut(newConfig.shortcut);
   };
 
-  if (showSettings && config) {
-    return (
-      <Settings
-        config={config}
-        onSave={handleSaveSettings}
-        onCancel={() => setShowSettings(false)}
-      />
-    );
-  }
-
-  // Recording pill mode
-  if (appState === "recording") {
-    return (
-      <main className="pill" data-tauri-drag-region>
-        <GlowingOrb state="recording" />
-        <span className="pill-label">Recording...</span>
-        <button className="pill-stop" onClick={handleStopAndPaste}>
-          <StopIcon />
-        </button>
-      </main>
-    );
-  }
-
-  // Normal window mode
   return (
-    <main className="overlay" data-tauri-drag-region>
-      <div className="overlay-header">
-        <h1 className="app-title">Echo</h1>
-        <button
-          className="settings-btn"
-          onClick={() => {
-            loadConfig();
-            setShowSettings(true);
-          }}
-          title="Settings"
-        >
-          <SettingsIcon />
-        </button>
-      </div>
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <h1 className="app-title">Echo</h1>
+        </div>
+        <nav className="sidebar-nav">
+          <button
+            className={`nav-item ${activeTab === "dictate" ? "active" : ""}`}
+            onClick={() => setActiveTab("dictate")}
+          >
+            <WaveIcon />
+            <span>Dictate</span>
+          </button>
+          <button
+            className={`nav-item ${activeTab === "history" ? "active" : ""}`}
+            onClick={() => setActiveTab("history")}
+          >
+            <ClockIcon />
+            <span>History</span>
+          </button>
+        </nav>
+        <div className="sidebar-footer">
+          <button
+            className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
+            onClick={() => {
+              loadConfig();
+              setActiveTab("settings");
+            }}
+          >
+            <SettingsIcon />
+            <span>Settings</span>
+          </button>
+        </div>
+      </aside>
 
-      <div className="overlay-tabs">
-        <button
-          className={`overlay-tab ${activeTab === "dictate" ? "active" : ""}`}
-          onClick={() => setActiveTab("dictate")}
-        >
-          Dictate
-        </button>
-        <button
-          className={`overlay-tab ${activeTab === "history" ? "active" : ""}`}
-          onClick={() => setActiveTab("history")}
-        >
-          History
-        </button>
-      </div>
+      <div className="main-content">
+        {activeTab === "dictate" && (
+          <>
+            <div className={`state-display ${appState}`}>
+              {appState === "idle" && (
+                <>
+                  <div className="state-icon idle-icon">
+                    <GlowingOrb state="idle" />
+                  </div>
+                  <p className="state-label">Ready to dictate</p>
+                  <p className="state-hint">
+                    Press{" "}
+                    <kbd>{config?.shortcut ?? "CommandOrControl+Shift+Space"}</kbd>{" "}
+                    or click the button
+                  </p>
+                </>
+              )}
 
-      {activeTab === "dictate" && (
-        <>
-          <div className={`state-display ${appState}`}>
-            {appState === "idle" && (
-              <>
-                <div className="state-icon idle-icon">
-                  <GlowingOrb state="idle" />
-                </div>
-                <p className="state-label">Ready to dictate</p>
+              {appState === "recording" && (
+                <>
+                  <div className="state-icon idle-icon">
+                    <GlowingOrb state="recording" />
+                  </div>
+                  <p className="state-label">Recording...</p>
+                  <p className="state-hint">Release the shortcut to stop</p>
+                </>
+              )}
+
+              {appState === "processing" && (
+                <>
+                  <div className="state-icon processing-icon">
+                    <GlowingOrb state="processing" />
+                  </div>
+                  <p className="state-label">Processing...</p>
+                  <p className="state-hint">Transcribing and polishing your text</p>
+                </>
+              )}
+
+              {appState === "success" && (
+                <>
+                  <div className="state-icon success-icon">
+                    <CheckIcon />
+                  </div>
+                  <p className="state-label">Pasted!</p>
+                  <p className="transcript-preview">{transcript}</p>
+                </>
+              )}
+
+              {appState === "copied" && (
+                <>
+                  <div className="state-icon success-icon">
+                    <CheckIcon />
+                  </div>
+                  <p className="state-label">Copied to clipboard</p>
+                  <p className="state-hint">
+                    Focus your target app and press Cmd/Ctrl+V to paste
+                  </p>
+                  <p className="transcript-preview">{transcript}</p>
+                </>
+              )}
+
+              {appState === "error" && (
+                <>
+                  <div className="state-icon error-icon">
+                    <ErrorIcon />
+                  </div>
+                  <p className="state-label">Error</p>
+                  <p className="error-message">{errorMsg}</p>
+                </>
+              )}
+            </div>
+
+            <button
+              className={`record-btn ${appState}`}
+              onClick={handleStartRecording}
+              disabled={appState === "processing" || appState === "recording"}
+            >
+              <WaveIcon />
+              <span>
+                {appState === "idle" && "Hold Shortcut to Dictate"}
+                {appState === "recording" && "Recording..."}
+                {appState === "processing" && "Processing..."}
+                {appState === "success" && "Hold Shortcut to Dictate"}
+                {appState === "copied" && "Hold Shortcut to Dictate"}
+                {appState === "error" && "Try Again"}
+              </span>
+            </button>
+          </>
+        )}
+
+        {activeTab === "history" && (
+          <div className="history-panel">
+            {history.length === 0 ? (
+              <div className="history-empty">
+                <HistoryIcon />
+                <p className="state-label">No transcriptions yet</p>
                 <p className="state-hint">
-                  Press{" "}
-                  <kbd>{config?.shortcut ?? "CommandOrControl+Shift+Space"}</kbd>{" "}
-                  or click the button
+                  Your dictation history will appear here
                 </p>
-              </>
-            )}
-
-            {appState === "processing" && (
+              </div>
+            ) : (
               <>
-                <div className="state-icon processing-icon">
-                  <GlowingOrb state="processing" />
+                <div className="history-list">
+                  {history.map((item) => (
+                    <div key={item.id} className="history-card">
+                      <div className="history-meta">
+                        <span className="history-date">
+                          {formatDate(item.created_at)}
+                        </span>
+                        <span
+                          className={`history-badge ${item.paste_result === "pasted" ? "badge-pasted" : "badge-copied"}`}
+                        >
+                          {item.paste_result === "pasted" ? "Pasted" : "Copied"}
+                        </span>
+                      </div>
+                      <p className="history-text">{item.text}</p>
+                      <div className="history-actions">
+                        <button
+                          className="history-copy"
+                          onClick={() => handleCopyHistoryItem(item.text, item.id)}
+                        >
+                          {copiedId === item.id ? "Copied!" : "Copy"}
+                        </button>
+                        <button
+                          className="history-delete"
+                          onClick={() => handleDeleteHistoryItem(item.id)}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <p className="state-label">Processing...</p>
-                <p className="state-hint">Transcribing and polishing your text</p>
-              </>
-            )}
-
-            {appState === "success" && (
-              <>
-                <div className="state-icon success-icon">
-                  <CheckIcon />
-                </div>
-                <p className="state-label">Pasted!</p>
-                <p className="transcript-preview">{transcript}</p>
-              </>
-            )}
-
-            {appState === "copied" && (
-              <>
-                <div className="state-icon success-icon">
-                  <CheckIcon />
-                </div>
-                <p className="state-label">Copied to clipboard</p>
-                <p className="state-hint">
-                  Focus your target app and press Cmd/Ctrl+V to paste
-                </p>
-                <p className="transcript-preview">{transcript}</p>
-              </>
-            )}
-
-            {appState === "error" && (
-              <>
-                <div className="state-icon error-icon">
-                  <ErrorIcon />
-                </div>
-                <p className="state-label">Error</p>
-                <p className="error-message">{errorMsg}</p>
+                <button className="history-clear" onClick={handleClearHistory}>
+                  Clear All History
+                </button>
               </>
             )}
           </div>
+        )}
 
-          <button
-            className={`record-btn ${appState}`}
-            onClick={handleStartRecording}
-            disabled={appState === "processing"}
-          >
-            {appState === "idle" && "Hold Shortcut to Dictate"}
-            {appState === "processing" && "Processing..."}
-            {appState === "success" && "Hold Shortcut to Dictate"}
-            {appState === "copied" && "Hold Shortcut to Dictate"}
-            {appState === "error" && "Try Again"}
-          </button>
-        </>
-      )}
-
-      {activeTab === "history" && (
-        <div className="history-panel">
-          {history.length === 0 ? (
-            <div className="history-empty">
-              <HistoryIcon />
-              <p className="state-label">No transcriptions yet</p>
-              <p className="state-hint">
-                Your dictation history will appear here
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="history-list">
-                {history.map((item) => (
-                  <div key={item.id} className="history-card">
-                    <div className="history-meta">
-                      <span className="history-date">
-                        {formatDate(item.created_at)}
-                      </span>
-                      <span
-                        className={`history-badge ${item.paste_result === "pasted" ? "badge-pasted" : "badge-copied"}`}
-                      >
-                        {item.paste_result === "pasted" ? "Pasted" : "Copied"}
-                      </span>
-                    </div>
-                    <p className="history-text">{item.text}</p>
-                    <div className="history-actions">
-                      <button
-                        className="history-copy"
-                        onClick={() => handleCopyHistoryItem(item.text, item.id)}
-                      >
-                        {copiedId === item.id ? "Copied!" : "Copy"}
-                      </button>
-                      <button
-                        className="history-delete"
-                        onClick={() => handleDeleteHistoryItem(item.id)}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button className="history-clear" onClick={handleClearHistory}>
-                Clear All History
-              </button>
-            </>
-          )}
-        </div>
-      )}
+        {activeTab === "settings" && config && (
+          <Settings
+            config={config}
+            onSave={handleSaveSettings}
+            onCancel={() => setActiveTab("dictate")}
+          />
+        )}
+      </div>
     </main>
   );
 }
@@ -515,10 +544,23 @@ function formatDate(iso: string): string {
   }
 }
 
-function StopIcon() {
+function WaveIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <rect x="4" y="4" width="16" height="16" rx="2" />
+    <svg className="wave-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M4 10v4" />
+      <path d="M8 7v10" />
+      <path d="M12 4v16" />
+      <path d="M16 7v10" />
+      <path d="M20 10v4" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg className="clock-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
     </svg>
   );
 }

@@ -4,17 +4,23 @@ mod focus;
 mod groq;
 mod history;
 mod input;
+mod model_download;
+mod whisper;
 
 use audio::RecorderHandle;
 use config::AppConfig;
 use focus::FocusTarget;
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 struct AppState {
     recorder: Mutex<RecorderHandle>,
     focus_target: Mutex<FocusTarget>,
+    recording_level: Arc<audio::SharedLevel>,
+    recording_active: Arc<AtomicBool>,
+    download_state: Arc<model_download::DownloadState>,
 }
 
 unsafe impl Send for AppState {}
@@ -63,11 +69,14 @@ fn capture_focus(state: tauri::State<'_, AppState>) -> Result<(), String> {
 fn start_recording(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let cfg = AppConfig::load();
     let mut recorder = state.recorder.lock().map_err(|e| format!("Lock error: {e}"))?;
-    recorder.start(cfg.input_device.as_deref())
+    recorder.start(cfg.input_device.as_deref(), Arc::clone(&state.recording_level))?;
+    state.recording_active.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
 fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state.recording_active.store(false, Ordering::SeqCst);
     let mut recorder = state.recorder.lock().map_err(|e| format!("Lock error: {e}"))?;
     let path = recorder.stop()?;
     Ok(path.to_string_lossy().to_string())
@@ -83,13 +92,32 @@ fn is_recording(state: tauri::State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
+fn get_recording_level(state: tauri::State<'_, AppState>) -> f32 {
+    if !state.recording_active.load(Ordering::SeqCst) {
+        return 0.0;
+    }
+    state.recording_level.take()
+}
+
+#[tauri::command]
 async fn transcribe_audio(audio_path: String) -> Result<String, String> {
     let cfg = AppConfig::load();
-    if cfg.groq_api_key.is_empty() {
-        return Err("Groq API key not configured".to_string());
-    }
     let path = std::path::PathBuf::from(&audio_path);
-    groq::transcribe(&cfg.groq_api_key, &path, &cfg.transcription_model).await
+
+    match cfg.model_provider.as_str() {
+        "local" => {
+            let model_size = cfg.local_model_size.clone();
+            tokio::task::spawn_blocking(move || whisper::transcribe_local(&path, &model_size))
+                .await
+                .map_err(|e| format!("Task error: {e}"))?
+        }
+        _ => {
+            if cfg.groq_api_key.is_empty() {
+                return Err("Groq API key not configured".to_string());
+            }
+            groq::transcribe(&cfg.groq_api_key, &path, &cfg.transcription_model).await
+        }
+    }
 }
 
 #[tauri::command]
@@ -183,6 +211,27 @@ fn play_chime() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn check_model_status(model_size: String, state: tauri::State<'_, AppState>) -> model_download::ModelStatus {
+    model_download::check_model_status(&model_size, &state.download_state)
+}
+
+#[tauri::command]
+async fn download_whisper_model(model_size: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let dl_state = Arc::clone(&state.download_state);
+    model_download::download_model(&model_size, dl_state).await
+}
+
+#[tauri::command]
+fn get_model_download_progress(state: tauri::State<'_, AppState>) -> model_download::DownloadProgress {
+    state.download_state.progress()
+}
+
+#[tauri::command]
+async fn delete_whisper_model(model_size: String) -> Result<(), String> {
+    model_download::delete_model(&model_size).await
+}
+
+#[tauri::command]
 fn list_audio_devices() -> Result<Vec<String>, String> {
     audio::list_devices()
 }
@@ -226,10 +275,30 @@ pub fn run() {
         .manage(AppState {
             recorder: Mutex::new(RecorderHandle::new()),
             focus_target: Mutex::new(FocusTarget::None),
+            recording_level: Arc::new(audio::SharedLevel::new()),
+            recording_active: Arc::new(AtomicBool::new(false)),
+            download_state: Arc::new(model_download::DownloadState::new()),
         })
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             window.set_always_on_top(true).ok();
+
+            if let Some(indicator) = app.get_webview_window("indicator") {
+                indicator.set_always_on_top(true).ok();
+                if let Ok(Some(monitor)) = app.primary_monitor() {
+                    let size = monitor.size();
+                    let scale = monitor.scale_factor();
+                    let logical_w = size.width as f64 / scale;
+                    let logical_h = size.height as f64 / scale;
+                    let ind_size = 64.0;
+                    let x = (logical_w - ind_size) / 2.0;
+                    let y = logical_h - ind_size - 80.0;
+                    let _ = indicator.set_size(tauri::LogicalSize::new(ind_size, ind_size));
+                    let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
+                }
+                indicator.show().ok();
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -240,10 +309,15 @@ pub fn run() {
             start_recording,
             stop_recording,
             is_recording,
+            get_recording_level,
             transcribe_audio,
             cleanup_text,
             paste_transcript,
             play_chime,
+            check_model_status,
+            download_whisper_model,
+            get_model_download_progress,
+            delete_whisper_model,
             list_audio_devices,
             test_microphone,
             list_transcript_history,

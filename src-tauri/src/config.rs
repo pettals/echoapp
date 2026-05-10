@@ -11,6 +11,18 @@ pub struct AppConfig {
     pub cleanup_enabled: bool,
     #[serde(default)]
     pub input_device: Option<String>,
+    #[serde(default = "default_model_provider")]
+    pub model_provider: String,
+    #[serde(default = "default_local_model_size")]
+    pub local_model_size: String,
+}
+
+fn default_model_provider() -> String {
+    "api".to_string()
+}
+
+fn default_local_model_size() -> String {
+    "small".to_string()
 }
 
 impl Default for AppConfig {
@@ -22,7 +34,20 @@ impl Default for AppConfig {
             cleanup_model: "llama-3.1-8b-instant".to_string(),
             cleanup_enabled: true,
             input_device: None,
+            model_provider: default_model_provider(),
+            local_model_size: default_local_model_size(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn models_dir() -> Result<PathBuf, String> {
+        let dir = dirs::data_dir()
+            .ok_or("Cannot find data directory")?
+            .join("echo")
+            .join("models");
+        fs::create_dir_all(&dir).map_err(|e| format!("Dir create error: {e}"))?;
+        Ok(dir)
     }
 }
 

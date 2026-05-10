@@ -1,11 +1,28 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavSpec, WavWriter};
 use std::io::BufWriter;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
+
+pub struct SharedLevel(AtomicU32);
+
+impl SharedLevel {
+    pub fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    pub fn store(&self, val: f32) {
+        self.0.store(val.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(0, Ordering::Relaxed))
+    }
+}
 
 enum Command {
     Stop,
@@ -26,7 +43,7 @@ impl RecorderHandle {
         }
     }
 
-    pub fn start(&mut self, device_name: Option<&str>) -> Result<(), String> {
+    pub fn start(&mut self, device_name: Option<&str>, level: Arc<SharedLevel>) -> Result<(), String> {
         if self.recording {
             return Err("Already recording".to_string());
         }
@@ -36,7 +53,7 @@ impl RecorderHandle {
         let (result_tx, result_rx) = mpsc::channel::<Result<std::path::PathBuf, String>>();
 
         thread::spawn(move || {
-            let result = run_recording(cmd_rx, device_name_owned.as_deref());
+            let result = run_recording(cmd_rx, device_name_owned.as_deref(), level);
             let _ = result_tx.send(result);
         });
 
@@ -189,6 +206,7 @@ pub fn test_mic(device_name: Option<&str>) -> Result<f32, String> {
 fn run_recording(
     cmd_rx: mpsc::Receiver<Command>,
     device_name: Option<&str>,
+    level: Arc<SharedLevel>,
 ) -> Result<std::path::PathBuf, String> {
     let device = get_device(device_name)?;
 
@@ -204,7 +222,6 @@ fn run_recording(
         NamedTempFile::with_suffix(".wav").map_err(|e| format!("Temp file error: {e}"))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    // Write all channels so the WAV is valid; Whisper handles multi-channel fine
     let spec = WavSpec {
         channels,
         sample_rate,
@@ -219,7 +236,6 @@ fn run_recording(
         WavWriter::new(BufWriter::new(file), spec).map_err(|e| format!("WAV error: {e}"))?;
 
     let writer = Arc::new(Mutex::new(Some(wav_writer)));
-    let writer_clone = Arc::clone(&writer);
 
     let err_fn = |err: cpal::StreamError| {
         eprintln!("Stream error: {err}");
@@ -228,63 +244,84 @@ fn run_recording(
     let stream_config: cpal::StreamConfig = supported_config.into();
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut guard) = writer_clone.lock() {
-                        if let Some(ref mut w) = *guard {
-                            for &sample in data.iter() {
-                                let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                                let _ = w.write_sample(s);
+        cpal::SampleFormat::F32 => {
+            let writer_clone = Arc::clone(&writer);
+            let lvl = Arc::clone(&level);
+            device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let mut peak: f32 = 0.0;
+                        if let Ok(mut guard) = writer_clone.lock() {
+                            if let Some(ref mut w) = *guard {
+                                for &sample in data.iter() {
+                                    peak = peak.max(sample.abs());
+                                    let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                                    let _ = w.write_sample(s);
+                                }
                             }
                         }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Stream build error: {e}"))?,
-        cpal::SampleFormat::I16 => device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut guard) = writer_clone.lock() {
-                        if let Some(ref mut w) = *guard {
-                            for &sample in data.iter() {
-                                let _ = w.write_sample(sample);
+                        lvl.store(peak.min(1.0));
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Stream build error: {e}"))?
+        }
+        cpal::SampleFormat::I16 => {
+            let writer_clone = Arc::clone(&writer);
+            let lvl = Arc::clone(&level);
+            device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        let mut peak: f32 = 0.0;
+                        if let Ok(mut guard) = writer_clone.lock() {
+                            if let Some(ref mut w) = *guard {
+                                for &sample in data.iter() {
+                                    peak = peak.max((sample as f32 / i16::MAX as f32).abs());
+                                    let _ = w.write_sample(sample);
+                                }
                             }
                         }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Stream build error: {e}"))?,
-        cpal::SampleFormat::U16 => device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                    if let Ok(mut guard) = writer_clone.lock() {
-                        if let Some(ref mut w) = *guard {
-                            for &sample in data.iter() {
-                                let normalized = (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
-                                let s = (normalized * i16::MAX as f32) as i16;
-                                let _ = w.write_sample(s);
+                        lvl.store(peak.min(1.0));
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Stream build error: {e}"))?
+        }
+        cpal::SampleFormat::U16 => {
+            let writer_clone = Arc::clone(&writer);
+            let lvl = Arc::clone(&level);
+            device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        let mut peak: f32 = 0.0;
+                        if let Ok(mut guard) = writer_clone.lock() {
+                            if let Some(ref mut w) = *guard {
+                                for &sample in data.iter() {
+                                    let normalized =
+                                        (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
+                                    peak = peak.max(normalized.abs());
+                                    let s = (normalized * i16::MAX as f32) as i16;
+                                    let _ = w.write_sample(s);
+                                }
                             }
                         }
-                    }
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Stream build error: {e}"))?,
+                        lvl.store(peak.min(1.0));
+                    },
+                    err_fn,
+                    None,
+                )
+                .map_err(|e| format!("Stream build error: {e}"))?
+        }
         fmt => return Err(format!("Unsupported sample format: {fmt:?}")),
     };
 
     stream.play().map_err(|e| format!("Play error: {e}"))?;
 
-    // Block until stop command
     let _ = cmd_rx.recv();
 
     drop(stream);
