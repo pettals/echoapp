@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Settings from "./components/Settings";
+import echoLogo from "./assets/echo-logo.png";
 import "./App.css";
 
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
@@ -39,9 +41,12 @@ function App() {
 /*  Dock Indicator (tiny always-visible window above the dock)        */
 /* ------------------------------------------------------------------ */
 
+const BAR_OFFSETS = [0.7, 1.0, 0.85, 0.95, 0.6];
+
 function DockIndicator() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
+  const prevRecording = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -53,13 +58,22 @@ function DockIndicator() {
         const isRec = await invoke<boolean>("is_recording");
         setRecording(isRec);
       } catch { /* ignore */ }
-    }, 200);
+    }, 150);
 
     return () => {
       mounted = false;
       clearInterval(poll);
     };
   }, []);
+
+  useEffect(() => {
+    if (recording && !prevRecording.current) {
+      invoke("play_indicator_sound", { kind: "open" }).catch(() => {});
+    } else if (!recording && prevRecording.current) {
+      invoke("play_indicator_sound", { kind: "close" }).catch(() => {});
+    }
+    prevRecording.current = recording;
+  }, [recording]);
 
   useEffect(() => {
     if (!recording) {
@@ -86,21 +100,34 @@ function DockIndicator() {
     };
   }, [recording]);
 
-  const scale = recording ? 1 + level * 0.6 : 1;
   const hue = recording ? level * 60 : 0;
-  const glowOpacity = recording ? 0.4 + level * 0.5 : 0.25;
-  const glowSize = recording ? 8 + level * 20 : 6;
+  const glowOpacity = recording ? 0.35 + level * 0.55 : 0.2;
+  const glowSize = recording ? 6 + level * 18 : 4;
 
   return (
     <div className="dock-indicator" data-tauri-drag-region>
       <div
-        className={`dock-dot ${recording ? "dock-dot--recording" : ""}`}
+        className={`dock-shell ${recording ? "dock-shell--open" : ""}`}
         style={{
-          transform: `scale(${scale})`,
           filter: recording ? `hue-rotate(${hue}deg)` : "none",
-          boxShadow: `0 0 ${glowSize}px rgba(229,255,92,${glowOpacity}), 0 0 ${glowSize * 2.5}px rgba(229,255,92,${glowOpacity * 0.4})`,
+          boxShadow: `0 0 ${glowSize}px rgba(229,255,92,${glowOpacity}), 0 0 ${glowSize * 2.5}px rgba(229,255,92,${glowOpacity * 0.35})`,
         }}
-      />
+      >
+        <div className="dock-dot" />
+        <div className="dock-waveform">
+          {BAR_OFFSETS.map((offset, i) => {
+            const barLevel = Math.min(level * offset, 1);
+            const height = recording ? 4 + barLevel * 22 : 0;
+            return (
+              <span
+                key={i}
+                className="dock-wave-bar"
+                style={{ height: `${height}px` }}
+              />
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -306,6 +333,27 @@ function MainApp() {
     };
   }, [loadConfig, registerShortcut, loadHistory]);
 
+  useEffect(() => {
+    const unlisten: (() => void)[] = [];
+
+    listen("tray-start-recording", () => {
+      handleStartRecording();
+    }).then((u) => unlisten.push(u));
+
+    listen("tray-stop-recording", () => {
+      handleStopAndPaste();
+    }).then((u) => unlisten.push(u));
+
+    listen("tray-open-settings", () => {
+      loadConfig();
+      setActiveTab("settings");
+    }).then((u) => unlisten.push(u));
+
+    return () => {
+      unlisten.forEach((u) => u());
+    };
+  }, [handleStartRecording, handleStopAndPaste, loadConfig]);
+
   const handleCopyHistoryItem = async (text: string, id: string) => {
     try {
       await invoke("copy_transcript", { text });
@@ -345,7 +393,14 @@ function MainApp() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1 className="app-title">Echo</h1>
+          <div className="app-logo-wrap">
+            <img
+              src={echoLogo}
+              alt="Echo"
+              className="app-logo"
+              draggable={false}
+            />
+          </div>
         </div>
         <nav className="sidebar-nav">
           <button

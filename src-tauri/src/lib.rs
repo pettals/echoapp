@@ -13,7 +13,10 @@ use focus::FocusTarget;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager};
 
 struct AppState {
     recorder: Mutex<RecorderHandle>,
@@ -21,6 +24,7 @@ struct AppState {
     recording_level: Arc<audio::SharedLevel>,
     recording_active: Arc<AtomicBool>,
     download_state: Arc<model_download::DownloadState>,
+    quit_requested: Arc<AtomicBool>,
 }
 
 unsafe impl Send for AppState {}
@@ -211,6 +215,43 @@ fn play_chime() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn play_indicator_sound(kind: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let sound = match kind.as_str() {
+            "open" => "/System/Library/Sounds/Tink.aiff",
+            "close" => "/System/Library/Sounds/Pop.aiff",
+            _ => "/System/Library/Sounds/Tink.aiff",
+        };
+        std::process::Command::new("afplay")
+            .arg(sound)
+            .spawn()
+            .map_err(|e| format!("afplay error: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let sound_name = match kind.as_str() {
+            "open" => "[System.Media.SystemSounds]::Exclamation.Play()",
+            "close" => "[System.Media.SystemSounds]::Asterisk.Play()",
+            _ => "[System.Media.SystemSounds]::Exclamation.Play()",
+        };
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", sound_name])
+            .spawn()
+            .map_err(|e| format!("powershell error: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = kind;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 fn check_model_status(model_size: String, state: tauri::State<'_, AppState>) -> model_download::ModelStatus {
     model_download::check_model_status(&model_size, &state.download_state)
 }
@@ -278,10 +319,24 @@ pub fn run() {
             recording_level: Arc::new(audio::SharedLevel::new()),
             recording_active: Arc::new(AtomicBool::new(false)),
             download_state: Arc::new(model_download::DownloadState::new()),
+            quit_requested: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
-            window.set_always_on_top(true).ok();
+            window.set_always_on_top(false).ok();
+
+            // Hide instead of close when the user clicks the red traffic light.
+            // We use hide() to remove the window from the dock / Cmd-Tab, but
+            // the webview stays alive so global-shortcut IPC keeps working.
+            let main_for_close = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = main_for_close.hide();
+                    #[cfg(target_os = "macos")]
+                    let _ = main_for_close.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
+            });
 
             if let Some(indicator) = app.get_webview_window("indicator") {
                 indicator.set_always_on_top(true).ok();
@@ -299,6 +354,64 @@ pub fn run() {
                 indicator.show().ok();
             }
 
+            // --- System tray / menu bar icon ---
+            let open_i = MenuItem::with_id(app, "open_app", "Open Echo", true, None::<&str>)?;
+            let start_i = MenuItem::with_id(app, "start_recording", "Start Recording", true, None::<&str>)?;
+            let stop_i = MenuItem::with_id(app, "stop_recording", "Stop Recording", true, None::<&str>)?;
+            let settings_i = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let sep = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Completely Close Echo", true, None::<&str>)?;
+
+            let menu = Menu::with_items(
+                app,
+                &[&open_i, &sep, &start_i, &stop_i, &sep2, &settings_i, &quit_i],
+            )?;
+
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(icon)
+                .icon_as_template(true)
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .tooltip("Echo")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open_app" => {
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "start_recording" => {
+                        let _ = app.emit("tray-start-recording", ());
+                    }
+                    "stop_recording" => {
+                        let _ = app.emit("tray-stop-recording", ());
+                    }
+                    "settings" => {
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("tray-open-settings", ());
+                    }
+                    "quit" => {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            state.quit_requested.store(true, Ordering::SeqCst);
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -314,6 +427,7 @@ pub fn run() {
             cleanup_text,
             paste_transcript,
             play_chime,
+            play_indicator_sound,
             check_model_status,
             download_whisper_model,
             get_model_download_progress,
@@ -326,6 +440,17 @@ pub fn run() {
             delete_transcript_history,
             clear_transcript_history,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let should_quit = app
+                    .try_state::<AppState>()
+                    .map(|s| s.quit_requested.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+                if !should_quit {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

@@ -139,19 +139,35 @@ body {
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
   position: relative;
-  z-index: 1;
+  z-index: 2;
+  overflow: visible;
 }
 
 .sidebar-header {
-  padding: 0 10px 28px;
+  padding: 0 6px 22px;
+  overflow: visible;
 }
 
-.app-title {
-  font-family: "SF Pro Display", Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--color-text-primary);
+/* Logo scales 2.2× (100% + 120%); wrap reserves height so nav does not overlap */
+.app-logo-wrap {
+  position: relative;
+  width: 100%;
+  padding-bottom: calc(576 / 1024 * 100% * 2.2);
+}
+
+.app-logo {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  object-position: left top;
+  transform: scale(2.2);
+  transform-origin: left top;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .sidebar-nav {
@@ -724,9 +740,39 @@ body {
   cursor: grab;
 }
 
+.dock-shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(20, 10, 40, 0.55);
+  border: 1.5px solid rgba(229, 255, 92, 0.45);
+  transition:
+    border-radius 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+    padding 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+    gap 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.3s ease,
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
+  will-change: border-radius, padding, gap, box-shadow, filter;
+  overflow: hidden;
+}
+
+.dock-shell--open {
+  border-radius: 14px;
+  padding: 6px 10px;
+  gap: 3px;
+  background: rgba(20, 10, 40, 0.72);
+  border-color: rgba(229, 255, 92, 0.65);
+  overflow: visible;
+}
+
 .dock-dot {
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
   border-radius: 50%;
   background: radial-gradient(
     circle at 40% 38%,
@@ -734,22 +780,62 @@ body {
     rgba(229, 255, 92, 0.85) 60%,
     rgba(180, 210, 60, 0.7)
   );
-  border: 1.5px solid rgba(229, 255, 92, 0.72);
-  box-shadow:
-    0 0 6px rgba(229, 255, 92, 0.25),
-    0 0 15px rgba(229, 255, 92, 0.1);
+  box-shadow: 0 0 5px rgba(229, 255, 92, 0.3);
   transition:
-    transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 0.18s ease,
-    filter 0.18s ease;
-  will-change: transform, box-shadow, filter;
+    width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    height 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    min-width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.25s ease;
 }
 
-.dock-dot--recording {
-  animation: dockPulse 0.9s ease-in-out infinite;
+.dock-shell--open .dock-dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  opacity: 0.85;
 }
 
-@keyframes dockPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.75; }
+.dock-waveform {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow: hidden;
+  max-width: 0;
+  opacity: 0;
+  transition:
+    max-width 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.25s ease 0.08s;
+}
+
+.dock-shell--open .dock-waveform {
+  max-width: 60px;
+  opacity: 1;
+}
+
+.dock-wave-bar {
+  display: block;
+  width: 3px;
+  min-height: 3px;
+  border-radius: 1.5px;
+  background: linear-gradient(
+    0deg,
+    rgba(229, 255, 92, 0.7),
+    rgba(241, 255, 134, 0.95)
+  );
+  transition: height 0.08s ease-out;
+  will-change: height;
+}
+
+.dock-shell--open .dock-wave-bar {
+  animation: barIdle 1.6s ease-in-out infinite;
+}
+
+.dock-shell--open .dock-wave-bar:nth-child(2) { animation-delay: 0.2s; }
+.dock-shell--open .dock-wave-bar:nth-child(3) { animation-delay: 0.4s; }
+.dock-shell--open .dock-wave-bar:nth-child(4) { animation-delay: 0.15s; }
+.dock-shell--open .dock-wave-bar:nth-child(5) { animation-delay: 0.35s; }
+
+@keyframes barIdle {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
 }

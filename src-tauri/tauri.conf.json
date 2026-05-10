@@ -20,7 +20,7 @@
         "minWidth": 600,
         "minHeight": 420,
         "resizable": true,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "decorations": true,
         "transparent": true,
         "titleBarStyle": "Overlay",
