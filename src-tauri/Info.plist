@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>WhisperClone needs microphone access to record your voice for transcription.</string>
+	<string>Echo needs microphone access to record your voice for transcription.</string>
 </dict>
 </plist>

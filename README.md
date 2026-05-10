@@ -1,4 +1,4 @@
-# WhisperClone
+# Echo
 
 A cross-platform desktop voice dictation app powered by open-source AI models. Press a global shortcut, speak, and get polished text pasted into your active application.
 
@@ -64,7 +64,7 @@ All models are open-source and hosted on [Groq](https://groq.com) for fast infer
 
 ## macOS Permissions
 
-WhisperClone needs:
+Echo needs:
 - **Microphone access** — for audio recording
 - **Accessibility** — for simulating paste (Cmd+V) into other apps
 
