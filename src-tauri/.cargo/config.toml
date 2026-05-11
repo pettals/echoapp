@@ -1,0 +1,4 @@
+# whisper.cpp uses std::filesystem (macOS 10.15+). CMake needs this explicitly or ggml fails to compile.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+CMAKE_OSX_DEPLOYMENT_TARGET = "11.0"

@@ -30,6 +30,24 @@ struct AppState {
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
+fn ensure_indicator_visible(app: &tauri::AppHandle) {
+    if let Some(indicator) = app.get_webview_window("indicator") {
+        indicator.set_always_on_top(true).ok();
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let size = monitor.size();
+            let scale = monitor.scale_factor();
+            let logical_w = size.width as f64 / scale;
+            let logical_h = size.height as f64 / scale;
+            let ind_size = 64.0;
+            let x = (logical_w - ind_size) / 2.0;
+            let y = logical_h - ind_size - 80.0;
+            let _ = indicator.set_size(tauri::LogicalSize::new(ind_size, ind_size));
+            let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
+        }
+        indicator.show().ok();
+    }
+}
+
 #[derive(Serialize)]
 struct ScreenSize {
     width: u32,
@@ -70,11 +88,12 @@ fn capture_focus(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_recording(state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn start_recording(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let cfg = AppConfig::load();
     let mut recorder = state.recorder.lock().map_err(|e| format!("Lock error: {e}"))?;
     recorder.start(cfg.input_device.as_deref(), Arc::clone(&state.recording_level))?;
     state.recording_active.store(true, Ordering::SeqCst);
+    ensure_indicator_visible(&app);
     Ok(())
 }
 
@@ -335,24 +354,11 @@ pub fn run() {
                     let _ = main_for_close.hide();
                     #[cfg(target_os = "macos")]
                     let _ = main_for_close.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    ensure_indicator_visible(main_for_close.app_handle());
                 }
             });
 
-            if let Some(indicator) = app.get_webview_window("indicator") {
-                indicator.set_always_on_top(true).ok();
-                if let Ok(Some(monitor)) = app.primary_monitor() {
-                    let size = monitor.size();
-                    let scale = monitor.scale_factor();
-                    let logical_w = size.width as f64 / scale;
-                    let logical_h = size.height as f64 / scale;
-                    let ind_size = 64.0;
-                    let x = (logical_w - ind_size) / 2.0;
-                    let y = logical_h - ind_size - 80.0;
-                    let _ = indicator.set_size(tauri::LogicalSize::new(ind_size, ind_size));
-                    let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
-                }
-                indicator.show().ok();
-            }
+            ensure_indicator_visible(app.handle());
 
             // --- System tray / menu bar icon ---
             let open_i = MenuItem::with_id(app, "open_app", "Open Echo", true, None::<&str>)?;
