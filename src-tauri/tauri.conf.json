@@ -30,8 +30,8 @@
       {
         "label": "indicator",
         "title": "",
-        "width": 64,
-        "height": 64,
+        "width": 180,
+        "height": 90,
         "resizable": false,
         "alwaysOnTop": true,
         "decorations": false,

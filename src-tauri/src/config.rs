@@ -15,6 +15,12 @@ pub struct AppConfig {
     pub model_provider: String,
     #[serde(default = "default_local_model_size")]
     pub local_model_size: String,
+    #[serde(default = "default_true")]
+    pub sounds_enabled: bool,
+    #[serde(default = "default_indicator_sound")]
+    pub indicator_sound: String,
+    #[serde(default = "default_success_sound")]
+    pub success_sound: String,
 }
 
 fn default_model_provider() -> String {
@@ -23,6 +29,18 @@ fn default_model_provider() -> String {
 
 fn default_local_model_size() -> String {
     "small".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_indicator_sound() -> String {
+    "tink".to_string()
+}
+
+fn default_success_sound() -> String {
+    "glass".to_string()
 }
 
 impl Default for AppConfig {
@@ -36,6 +54,9 @@ impl Default for AppConfig {
             input_device: None,
             model_provider: default_model_provider(),
             local_model_size: default_local_model_size(),
+            sounds_enabled: default_true(),
+            indicator_sound: default_indicator_sound(),
+            success_sound: default_success_sound(),
         }
     }
 }

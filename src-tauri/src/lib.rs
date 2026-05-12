@@ -7,6 +7,10 @@ mod input;
 mod model_download;
 mod whisper;
 
+#[cfg(target_os = "macos")]
+#[macro_use]
+extern crate objc;
+
 use audio::RecorderHandle;
 use config::AppConfig;
 use focus::FocusTarget;
@@ -33,19 +37,87 @@ unsafe impl Sync for AppState {}
 fn ensure_indicator_visible(app: &tauri::AppHandle) {
     if let Some(indicator) = app.get_webview_window("indicator") {
         indicator.set_always_on_top(true).ok();
-        if let Ok(Some(monitor)) = app.primary_monitor() {
+
+        // Determine which monitor to place the HUD on: prefer the monitor
+        // that currently contains the main window, fall back to primary.
+        let monitor = app
+            .get_webview_window("main")
+            .and_then(|w| w.current_monitor().ok().flatten())
+            .or_else(|| app.primary_monitor().ok().flatten());
+
+        if let Some(monitor) = monitor {
             let size = monitor.size();
+            let pos = monitor.position();
             let scale = monitor.scale_factor();
-            let logical_w = size.width as f64 / scale;
-            let logical_h = size.height as f64 / scale;
-            let ind_size = 64.0;
-            let x = (logical_w - ind_size) / 2.0;
-            let y = logical_h - ind_size - 80.0;
-            let _ = indicator.set_size(tauri::LogicalSize::new(ind_size, ind_size));
+
+            let mon_x = pos.x as f64 / scale;
+            let mon_y = pos.y as f64 / scale;
+            let mon_w = size.width as f64 / scale;
+            let mon_h = size.height as f64 / scale;
+
+            let ind_w = 180.0;
+            let ind_h = 90.0;
+            let x = mon_x + (mon_w - ind_w) / 2.0;
+            let y = mon_y + mon_h - ind_h - 80.0;
+
+            let _ = indicator.set_size(tauri::LogicalSize::new(ind_w, ind_h));
             let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
         }
         indicator.show().ok();
+
+        #[cfg(target_os = "macos")]
+        unsafe {
+            make_indicator_non_activating(&indicator);
+            let ns_win = indicator.ns_window().unwrap() as *mut objc::runtime::Object;
+            let _: () = objc::msg_send![ns_win, setCollectionBehavior: 1u64 << 0 | 1u64 << 4];
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn make_indicator_non_activating(window: &tauri::WebviewWindow) {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel, BOOL, NO};
+
+    extern "C" {
+        fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
+    }
+
+    let ns_window_ptr = match window.ns_window() {
+        Ok(ptr) => ptr as *mut Object,
+        Err(_) => return,
+    };
+    if ns_window_ptr.is_null() {
+        return;
+    }
+
+    // Register a one-time runtime subclass of NSWindow that refuses to
+    // become key or main, preventing macOS from activating Echo on click.
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        let superclass = Class::get("NSWindow").unwrap();
+        let mut decl = ClassDecl::new("EchoIndicatorWindow", superclass).unwrap();
+
+        extern "C" fn no(_this: &Object, _cmd: Sel) -> BOOL {
+            NO
+        }
+
+        unsafe {
+            decl.add_method(
+                sel!(canBecomeKeyWindow),
+                no as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            decl.add_method(
+                sel!(canBecomeMainWindow),
+                no as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+        }
+        decl.register();
+    });
+
+    // Swap the window's isa to our non-activating subclass
+    let cls = Class::get("EchoIndicatorWindow").unwrap();
+    object_setClass(ns_window_ptr, cls);
 }
 
 #[derive(Serialize)]
@@ -191,83 +263,87 @@ fn paste_transcript(text: String, state: tauri::State<'_, AppState>, app: tauri:
     Ok("pasted".to_string())
 }
 
-#[tauri::command]
-fn play_chime() -> Result<(), String> {
+#[cfg(target_os = "macos")]
+fn sound_name_to_path(name: &str) -> Option<&'static str> {
+    match name {
+        "glass" => Some("/System/Library/Sounds/Glass.aiff"),
+        "tink" => Some("/System/Library/Sounds/Tink.aiff"),
+        "pop" => Some("/System/Library/Sounds/Pop.aiff"),
+        "hero" => Some("/System/Library/Sounds/Hero.aiff"),
+        "purr" => Some("/System/Library/Sounds/Purr.aiff"),
+        "morse" => Some("/System/Library/Sounds/Morse.aiff"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sound_name_to_ps(name: &str) -> &'static str {
+    match name {
+        "glass" => "[System.Media.SystemSounds]::Asterisk.Play()",
+        "tink" => "[System.Media.SystemSounds]::Exclamation.Play()",
+        "pop" => "[System.Media.SystemSounds]::Asterisk.Play()",
+        "hero" => "[System.Media.SystemSounds]::Hand.Play()",
+        "purr" => "[System.Media.SystemSounds]::Beep.Play()",
+        "morse" => "[System.Media.SystemSounds]::Question.Play()",
+        _ => "[System.Media.SystemSounds]::Asterisk.Play()",
+    }
+}
+
+fn play_sound_by_name(name: &str) -> Result<(), String> {
+    if name == "none" {
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     {
-        // Pick a pleasant built-in macOS sound. Run detached so we never block
-        // the UI thread; fall through if the binary isn't found for some reason.
-        let candidates = [
-            "/System/Library/Sounds/Glass.aiff",
-            "/System/Library/Sounds/Tink.aiff",
-            "/System/Library/Sounds/Pop.aiff",
-        ];
-        let sound = candidates
-            .iter()
-            .find(|p| std::path::Path::new(p).exists())
-            .copied()
+        let path = sound_name_to_path(name)
             .unwrap_or("/System/Library/Sounds/Glass.aiff");
         std::process::Command::new("afplay")
-            .arg(sound)
+            .arg(path)
             .spawn()
             .map_err(|e| format!("afplay error: {e}"))?;
-        Ok(())
+        return Ok(());
     }
 
     #[cfg(target_os = "windows")]
     {
+        let cmd = sound_name_to_ps(name);
         std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "[System.Media.SystemSounds]::Asterisk.Play()",
-            ])
+            .args(["-NoProfile", "-Command", cmd])
             .spawn()
             .map_err(|e| format!("powershell error: {e}"))?;
-        Ok(())
+        return Ok(());
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        let _ = name;
         Ok(())
     }
 }
 
 #[tauri::command]
+fn play_chime() -> Result<(), String> {
+    let cfg = AppConfig::load();
+    if !cfg.sounds_enabled || cfg.success_sound == "none" {
+        return Ok(());
+    }
+    play_sound_by_name(&cfg.success_sound)
+}
+
+#[tauri::command]
 fn play_indicator_sound(kind: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let sound = match kind.as_str() {
-            "open" => "/System/Library/Sounds/Tink.aiff",
-            "close" => "/System/Library/Sounds/Pop.aiff",
-            _ => "/System/Library/Sounds/Tink.aiff",
-        };
-        std::process::Command::new("afplay")
-            .arg(sound)
-            .spawn()
-            .map_err(|e| format!("afplay error: {e}"))?;
-        Ok(())
+    let cfg = AppConfig::load();
+    if !cfg.sounds_enabled || cfg.indicator_sound == "none" {
+        return Ok(());
     }
+    let _ = kind;
+    play_sound_by_name(&cfg.indicator_sound)
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        let sound_name = match kind.as_str() {
-            "open" => "[System.Media.SystemSounds]::Exclamation.Play()",
-            "close" => "[System.Media.SystemSounds]::Asterisk.Play()",
-            _ => "[System.Media.SystemSounds]::Exclamation.Play()",
-        };
-        std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", sound_name])
-            .spawn()
-            .map_err(|e| format!("powershell error: {e}"))?;
-        Ok(())
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let _ = kind;
-        Ok(())
-    }
+#[tauri::command]
+fn play_sound_preview(sound: String) -> Result<(), String> {
+    play_sound_by_name(&sound)
 }
 
 #[tauri::command]
@@ -326,6 +402,25 @@ fn clear_transcript_history() -> Result<(), String> {
     history::clear()
 }
 
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    show_main_window_internal(&app);
+}
+
+fn show_main_window_internal(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    if let Some(indicator) = app.get_webview_window("indicator") {
+        let _ = indicator.hide();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -358,8 +453,6 @@ pub fn run() {
                 }
             });
 
-            ensure_indicator_visible(app.handle());
-
             // --- System tray / menu bar icon ---
             let open_i = MenuItem::with_id(app, "open_app", "Open Echo", true, None::<&str>)?;
             let start_i = MenuItem::with_id(app, "start_recording", "Start Recording", true, None::<&str>)?;
@@ -384,13 +477,7 @@ pub fn run() {
                 .tooltip("Echo")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open_app" => {
-                        #[cfg(target_os = "macos")]
-                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
+                        show_main_window_internal(app);
                     }
                     "start_recording" => {
                         let _ = app.emit("tray-start-recording", ());
@@ -399,13 +486,7 @@ pub fn run() {
                         let _ = app.emit("tray-stop-recording", ());
                     }
                     "settings" => {
-                        #[cfg(target_os = "macos")]
-                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                        }
+                        show_main_window_internal(app);
                         let _ = app.emit("tray-open-settings", ());
                     }
                     "quit" => {
@@ -434,6 +515,7 @@ pub fn run() {
             paste_transcript,
             play_chime,
             play_indicator_sound,
+            play_sound_preview,
             check_model_status,
             download_whisper_model,
             get_model_download_progress,
@@ -445,6 +527,7 @@ pub fn run() {
             copy_transcript,
             delete_transcript_history,
             clear_transcript_history,
+            show_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

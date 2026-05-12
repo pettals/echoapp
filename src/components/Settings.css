@@ -1,10 +1,18 @@
 .settings-pane {
   width: 100%;
+  max-width: 560px;
+  height: 100%;
+  max-height: 100%;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
   flex: 1;
+  min-height: 0;
+  align-self: center;
   overflow-y: auto;
+  padding-right: 4px;
+  padding-bottom: 8px;
 }
 
 .settings-pane::-webkit-scrollbar {
@@ -429,4 +437,59 @@
   padding: 6px 10px;
   background: rgba(255, 127, 120, 0.08);
   border-radius: 8px;
+}
+
+/* ---- Sound Settings ---- */
+
+.sound-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: opacity var(--duration-fast, 140ms);
+}
+
+.sound-options--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.sound-select-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sound-select-row select {
+  flex: 1;
+  height: 44px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: var(--border-glass, 1px solid rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 14px);
+  color: var(--color-text-primary, #fffdf2);
+  font-family: inherit;
+  font-size: 15px;
+  outline: none;
+  box-shadow: var(--shadow-inner-glass, inset 0 1px 0 rgba(255, 255, 255, 0.12));
+  transition: border-color var(--duration-fast, 140ms),
+              box-shadow var(--duration-fast, 140ms),
+              background var(--duration-fast, 140ms);
+}
+
+.sound-select-row select:focus {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(229, 255, 92, 0.5);
+  box-shadow: 0 0 0 2px rgba(229, 255, 92, 0.12),
+              0 0 22px rgba(229, 255, 92, 0.1);
+}
+
+.sound-test-btn {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm, 14px);
 }

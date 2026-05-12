@@ -11,6 +11,9 @@ interface AppConfig {
   input_device: string | null;
   model_provider: "api" | "local";
   local_model_size: "small" | "medium";
+  sounds_enabled: boolean;
+  indicator_sound: string;
+  success_sound: string;
 }
 
 interface ModelStatus {
@@ -446,6 +449,91 @@ export default function Settings({ config, onSave, onCancel }: SettingsProps) {
           </div>
         </fieldset>
 
+        <fieldset className="form-section">
+          <legend>Sounds</legend>
+
+          <div className="form-group checkbox-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={form.sounds_enabled}
+                onChange={(e) =>
+                  setForm({ ...form, sounds_enabled: e.target.checked })
+                }
+              />
+              Enable sounds
+            </label>
+          </div>
+
+          <div className={`sound-options ${!form.sounds_enabled ? "sound-options--disabled" : ""}`}>
+            <div className="form-group">
+              <label htmlFor="indicator-sound">Recording Indicator Sound</label>
+              <div className="sound-select-row">
+                <select
+                  id="indicator-sound"
+                  value={form.indicator_sound}
+                  onChange={(e) =>
+                    setForm({ ...form, indicator_sound: e.target.value })
+                  }
+                  disabled={!form.sounds_enabled}
+                >
+                  <option value="tink">Tink</option>
+                  <option value="pop">Pop</option>
+                  <option value="glass">Glass</option>
+                  <option value="hero">Hero</option>
+                  <option value="purr">Purr</option>
+                  <option value="morse">Morse</option>
+                  <option value="none">None</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn-secondary sound-test-btn"
+                  disabled={!form.sounds_enabled || form.indicator_sound === "none"}
+                  onClick={() =>
+                    invoke("play_sound_preview", { sound: form.indicator_sound }).catch(() => {})
+                  }
+                >
+                  <SpeakerIcon />
+                </button>
+              </div>
+              <small>Played when recording starts and stops</small>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="success-sound">Success Sound</label>
+              <div className="sound-select-row">
+                <select
+                  id="success-sound"
+                  value={form.success_sound}
+                  onChange={(e) =>
+                    setForm({ ...form, success_sound: e.target.value })
+                  }
+                  disabled={!form.sounds_enabled}
+                >
+                  <option value="glass">Glass</option>
+                  <option value="tink">Tink</option>
+                  <option value="pop">Pop</option>
+                  <option value="hero">Hero</option>
+                  <option value="purr">Purr</option>
+                  <option value="morse">Morse</option>
+                  <option value="none">None</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn-secondary sound-test-btn"
+                  disabled={!form.sounds_enabled || form.success_sound === "none"}
+                  onClick={() =>
+                    invoke("play_sound_preview", { sound: form.success_sound }).catch(() => {})
+                  }
+                >
+                  <SpeakerIcon />
+                </button>
+              </div>
+              <small>Played after transcription completes</small>
+            </div>
+          </div>
+        </fieldset>
+
         <div className="form-actions">
           <button type="submit" className="btn-primary" disabled={saving}>
             {saving ? "Saving..." : "Save"}
@@ -469,6 +557,16 @@ function CloudIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+    </svg>
+  );
+}
+
+function SpeakerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
     </svg>
   );
 }

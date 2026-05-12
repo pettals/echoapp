@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Settings from "./components/Settings";
@@ -19,6 +19,9 @@ interface AppConfig {
   input_device: string | null;
   model_provider: "api" | "local";
   local_model_size: "small" | "medium";
+  sounds_enabled: boolean;
+  indicator_sound: string;
+  success_sound: string;
 }
 
 interface HistoryItem {
@@ -46,6 +49,8 @@ const BAR_OFFSETS = [0.7, 1.0, 0.85, 0.95, 0.6];
 function DockIndicator() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevRecording = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -76,6 +81,16 @@ function DockIndicator() {
   }, [recording]);
 
   useEffect(() => {
+    if (recording) {
+      setShowTooltip(false);
+      if (tooltipTimer.current) {
+        clearTimeout(tooltipTimer.current);
+        tooltipTimer.current = null;
+      }
+    }
+  }, [recording]);
+
+  useEffect(() => {
     if (!recording) {
       setLevel(0);
       if (pollRef.current) {
@@ -100,33 +115,83 @@ function DockIndicator() {
     };
   }, [recording]);
 
-  const hue = recording ? level * 60 : 0;
-  const glowOpacity = recording ? 0.35 + level * 0.55 : 0.2;
-  const glowSize = recording ? 6 + level * 18 : 4;
+  const handleStartRecording = useCallback(async () => {
+    if (recording) return;
+    try {
+      await invoke("capture_focus");
+      await emit("indicator-start-recording");
+    } catch { /* ignore */ }
+  }, [recording]);
+
+  const handleStopClick = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!recording) return;
+    try {
+      await emit("tray-stop-recording");
+    } catch { /* ignore */ }
+  }, [recording]);
+
+  if (recording) {
+    const hue = level * 60;
+    const glowOpacity = 0.35 + level * 0.55;
+    const glowSize = 6 + level * 18;
+
+    return (
+      <div className="dock-indicator" data-tauri-drag-region>
+        <div
+          className="dock-shell dock-shell--open"
+          style={{
+            filter: `hue-rotate(${hue}deg)`,
+            boxShadow: `0 0 ${glowSize}px rgba(229,255,92,${glowOpacity}), 0 0 ${glowSize * 2.5}px rgba(229,255,92,${glowOpacity * 0.35})`,
+          }}
+        >
+          <div className="dock-dot" />
+          <div className="dock-waveform">
+            {BAR_OFFSETS.map((offset, i) => {
+              const barLevel = Math.min(level * offset, 1);
+              const height = 4 + barLevel * 22;
+              return (
+                <span
+                  key={i}
+                  className="dock-wave-bar"
+                  style={{ height: `${height}px` }}
+                />
+              );
+            })}
+          </div>
+          <button className="dock-stop-btn" onClick={handleStopClick}>
+            <span className="dock-stop-icon" />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="dock-indicator" data-tauri-drag-region>
+    <div
+      className="dock-indicator"
+      data-tauri-drag-region
+      onMouseEnter={() => {
+        tooltipTimer.current = setTimeout(() => setShowTooltip(true), 2000);
+      }}
+      onMouseLeave={() => {
+        setShowTooltip(false);
+        if (tooltipTimer.current) {
+          clearTimeout(tooltipTimer.current);
+          tooltipTimer.current = null;
+        }
+      }}
+    >
+      <span className={`dock-tooltip ${showTooltip ? "dock-tooltip--visible" : ""}`}>
+        Click to start dictation
+      </span>
       <div
-        className={`dock-shell ${recording ? "dock-shell--open" : ""}`}
-        style={{
-          filter: recording ? `hue-rotate(${hue}deg)` : "none",
-          boxShadow: `0 0 ${glowSize}px rgba(229,255,92,${glowOpacity}), 0 0 ${glowSize * 2.5}px rgba(229,255,92,${glowOpacity * 0.35})`,
-        }}
+        className="dock-shell dock-shell--idle"
+        onClick={handleStartRecording}
       >
-        <div className="dock-dot" />
-        <div className="dock-waveform">
-          {BAR_OFFSETS.map((offset, i) => {
-            const barLevel = Math.min(level * offset, 1);
-            const height = recording ? 4 + barLevel * 22 : 0;
-            return (
-              <span
-                key={i}
-                className="dock-wave-bar"
-                style={{ height: `${height}px` }}
-              />
-            );
-          })}
-        </div>
+        <img src={echoLogo} alt="" className="dock-hud-logo" draggable={false} />
+        <span className="dock-hud-text">Echo</span>
+        <span className="dock-hud-dot" />
       </div>
     </div>
   );
@@ -168,6 +233,8 @@ function MainApp() {
   }, []);
 
   const playChime = useCallback(async () => {
+    if (config && !config.sounds_enabled) return;
+
     try {
       await invoke("play_chime");
       return;
@@ -198,7 +265,7 @@ function MainApp() {
 
     playTone(1046.5, now, 0.18);
     playTone(1318.51, now + 0.09, 0.28);
-  }, [getAudioCtx]);
+  }, [getAudioCtx, config]);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -349,6 +416,30 @@ function MainApp() {
       setActiveTab("settings");
     }).then((u) => unlisten.push(u));
 
+    listen("indicator-start-recording", async () => {
+      try {
+        const isRec = await invoke<boolean>("is_recording");
+        if (isRec) return;
+
+        const cfg = await invoke<AppConfig>("get_config");
+        if (cfg.model_provider === "api" && !cfg.groq_api_key) {
+          setActiveTab("settings");
+          return;
+        }
+
+        await invoke("start_recording");
+
+        setAppState("recording");
+        setTranscript("");
+        setErrorMsg("");
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setErrorMsg(msg);
+        setAppState("error");
+        setTimeout(() => setAppState("idle"), 5000);
+      }
+    }).then((u) => unlisten.push(u));
+
     return () => {
       unlisten.forEach((u) => u());
     };
@@ -391,6 +482,11 @@ function MainApp() {
 
   return (
     <main className="app-shell">
+      <div
+        className="titlebar-drag-region"
+        data-tauri-drag-region
+        aria-hidden
+      />
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="app-logo-wrap">
@@ -434,7 +530,7 @@ function MainApp() {
 
       <div className="main-content">
         {activeTab === "dictate" && (
-          <>
+          <div className="dictate-panel">
             <div className={`state-display ${appState}`}>
               {appState === "idle" && (
                 <>
@@ -519,7 +615,7 @@ function MainApp() {
                 {appState === "error" && "Try Again"}
               </span>
             </button>
-          </>
+          </div>
         )}
 
         {activeTab === "history" && (
