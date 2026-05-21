@@ -4,12 +4,18 @@ mod focus;
 mod groq;
 mod history;
 mod input;
+mod media;
 mod model_download;
+mod secure;
+mod setup;
 mod whisper;
 
 #[cfg(target_os = "macos")]
 #[macro_use]
 extern crate objc;
+
+#[cfg(target_os = "macos")]
+use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
 use audio::RecorderHandle;
 use config::AppConfig;
@@ -21,6 +27,11 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
+
+const NO_SPEECH_DETECTED: &str = "NO_SPEECH_DETECTED";
+const INDICATOR_COMPACT_WIDTH: f64 = 68.0;
+const INDICATOR_COMPACT_HEIGHT: f64 = 16.0;
+const INDICATOR_BOTTOM_OFFSET: f64 = 34.0;
 
 struct AppState {
     recorder: Mutex<RecorderHandle>,
@@ -34,50 +45,96 @@ struct AppState {
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
 
+fn place_indicator_in_work_area(
+    indicator: &tauri::WebviewWindow,
+    monitor: Option<tauri::Monitor>,
+    ind_w: f64,
+    ind_h: f64,
+) {
+    if let Some(monitor) = monitor {
+        let work_area = monitor.work_area();
+        let size = work_area.size;
+        let pos = work_area.position;
+        let scale = monitor.scale_factor();
+
+        let mon_x = pos.x as f64 / scale;
+        let mon_y = pos.y as f64 / scale;
+        let mon_w = size.width as f64 / scale;
+        let mon_h = size.height as f64 / scale;
+        let x = mon_x + (mon_w - ind_w) / 2.0;
+        let y = mon_y + mon_h - ind_h - INDICATOR_BOTTOM_OFFSET;
+
+        let _ = indicator.set_size(tauri::LogicalSize::new(ind_w, ind_h));
+        let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
+    }
+}
+
 fn ensure_indicator_visible(app: &tauri::AppHandle) {
+    // Capture the frontmost app NOW, before showing the indicator, so that
+    // a later HUD-click can paste back into the correct target.
+    if let Some(state) = app.try_state::<AppState>() {
+        let target = FocusTarget::capture();
+        if !target.is_self_app() {
+            if let Ok(mut ft) = state.focus_target.lock() {
+                *ft = target;
+            }
+        }
+    }
+
     if let Some(indicator) = app.get_webview_window("indicator") {
         indicator.set_always_on_top(true).ok();
 
-        // Determine which monitor to place the HUD on: prefer the monitor
-        // that currently contains the main window, fall back to primary.
-        let monitor = app
-            .get_webview_window("main")
-            .and_then(|w| w.current_monitor().ok().flatten())
-            .or_else(|| app.primary_monitor().ok().flatten());
+        // Use the primary monitor so the HUD stays on the active
+        // display and never pulls the user to the main window's space.
+        let monitor = app.primary_monitor().ok().flatten();
 
-        if let Some(monitor) = monitor {
-            let size = monitor.size();
-            let pos = monitor.position();
-            let scale = monitor.scale_factor();
+        place_indicator_in_work_area(
+            &indicator,
+            monitor,
+            INDICATOR_COMPACT_WIDTH,
+            INDICATOR_COMPACT_HEIGHT,
+        );
 
-            let mon_x = pos.x as f64 / scale;
-            let mon_y = pos.y as f64 / scale;
-            let mon_w = size.width as f64 / scale;
-            let mon_h = size.height as f64 / scale;
-
-            let ind_w = 180.0;
-            let ind_h = 90.0;
-            let x = mon_x + (mon_w - ind_w) / 2.0;
-            let y = mon_y + mon_h - ind_h - 80.0;
-
-            let _ = indicator.set_size(tauri::LogicalSize::new(ind_w, ind_h));
-            let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
-        }
-        indicator.show().ok();
-
+        // Apply non-activating setup BEFORE showing so the window never
+        // triggers activation, even on the initial show().
         #[cfg(target_os = "macos")]
         unsafe {
             make_indicator_non_activating(&indicator);
             let ns_win = indicator.ns_window().unwrap() as *mut objc::runtime::Object;
-            let _: () = objc::msg_send![ns_win, setCollectionBehavior: 1u64 << 0 | 1u64 << 4];
+            // Keep the HUD with the active Space instead of pulling the user
+            // back to the Space where the app window last lived.
+            let _: () = objc::msg_send![ns_win, setCollectionBehavior: 1u64 << 1 | 1u64 << 4];
         }
+
+        indicator.show().ok();
     }
+}
+
+#[tauri::command]
+fn reposition_indicator(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let indicator = app
+        .get_webview_window("indicator")
+        .ok_or_else(|| "Indicator window not found".to_string())?;
+    let monitor = app.primary_monitor().map_err(|e| e.to_string())?;
+
+    place_indicator_in_work_area(&indicator, monitor, width, height);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_main_vibrancy(window: &tauri::WebviewWindow) {
+    let _ = apply_vibrancy(
+        window,
+        NSVisualEffectMaterial::Sidebar,
+        Some(NSVisualEffectState::Active),
+        Some(34.0),
+    );
 }
 
 #[cfg(target_os = "macos")]
 unsafe fn make_indicator_non_activating(window: &tauri::WebviewWindow) {
     use objc::declare::ClassDecl;
-    use objc::runtime::{Class, Object, Sel, BOOL, NO};
+    use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 
     extern "C" {
         fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
@@ -91,8 +148,6 @@ unsafe fn make_indicator_non_activating(window: &tauri::WebviewWindow) {
         return;
     }
 
-    // Register a one-time runtime subclass of NSWindow that refuses to
-    // become key or main, preventing macOS from activating Echo on click.
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
         let superclass = Class::get("NSWindow").unwrap();
@@ -100,6 +155,12 @@ unsafe fn make_indicator_non_activating(window: &tauri::WebviewWindow) {
 
         extern "C" fn no(_this: &Object, _cmd: Sel) -> BOOL {
             NO
+        }
+        extern "C" fn yes(_this: &Object, _cmd: Sel) -> BOOL {
+            YES
+        }
+        extern "C" fn yes_event(_this: &Object, _cmd: Sel, _event: *mut Object) -> BOOL {
+            YES
         }
 
         unsafe {
@@ -111,13 +172,37 @@ unsafe fn make_indicator_non_activating(window: &tauri::WebviewWindow) {
                 sel!(canBecomeMainWindow),
                 no as extern "C" fn(&Object, Sel) -> BOOL,
             );
+            decl.add_method(
+                sel!(_preventsActivation),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
+            // Deliver the first click directly without requiring activation.
+            decl.add_method(
+                sel!(acceptsFirstMouse:),
+                yes_event as extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
+            );
+            // Prevent AppKit from reordering windows (and activating) on click.
+            decl.add_method(
+                sel!(shouldDelayWindowOrderingForEvent:),
+                yes_event as extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
+            );
         }
         decl.register();
     });
 
-    // Swap the window's isa to our non-activating subclass
     let cls = Class::get("EchoIndicatorWindow").unwrap();
     object_setClass(ns_window_ptr, cls);
+
+    let ns_color_class = Class::get("NSColor").unwrap();
+    let clear_color: *mut Object = objc::msg_send![ns_color_class, clearColor];
+    let _: () = objc::msg_send![ns_window_ptr, setBackgroundColor: clear_color];
+    let _: () = objc::msg_send![ns_window_ptr, setOpaque: false];
+
+    // NSStatusWindowLevel (25) keeps the HUD reliably above all normal and
+    // floating windows so it never falls behind the focused app.
+    let _: () = objc::msg_send![ns_window_ptr, setLevel: 25i64];
+    let _: () = objc::msg_send![ns_window_ptr, setIgnoresMouseEvents: false];
+    let _: () = objc::msg_send![ns_window_ptr, setHidesOnDeactivate: false];
 }
 
 #[derive(Serialize)]
@@ -134,6 +219,27 @@ fn get_config() -> AppConfig {
 #[tauri::command]
 fn save_config(config: AppConfig) -> Result<(), String> {
     config.save()
+}
+
+#[tauri::command]
+fn get_setup_status() -> setup::SetupStatus {
+    let cfg = AppConfig::load();
+    setup::get_status(&cfg)
+}
+
+#[tauri::command]
+fn validate_shortcut(shortcut: String) -> setup::ShortcutValidation {
+    setup::validate_shortcut(&shortcut)
+}
+
+#[tauri::command]
+fn open_setup_help(target: String) -> Result<(), String> {
+    setup::open_help(&target)
+}
+
+#[tauri::command]
+fn request_accessibility_permission() -> Result<bool, String> {
+    setup::request_accessibility_permission()
 }
 
 #[tauri::command]
@@ -199,6 +305,15 @@ async fn transcribe_audio(audio_path: String) -> Result<String, String> {
     let cfg = AppConfig::load();
     let path = std::path::PathBuf::from(&audio_path);
 
+    let speech_path = path.clone();
+    let has_speech = tokio::task::spawn_blocking(move || audio::has_speech(&speech_path))
+        .await
+        .map_err(|e| format!("Task error: {e}"))??;
+
+    if !has_speech {
+        return Err(NO_SPEECH_DETECTED.to_string());
+    }
+
     match cfg.model_provider.as_str() {
         "local" => {
             let model_size = cfg.local_model_size.clone();
@@ -228,8 +343,13 @@ async fn cleanup_text(text: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn paste_transcript(text: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
+fn paste_transcript(text: String, state: tauri::State<'_, AppState>, _app: tauri::AppHandle) -> Result<String, String> {
     input::write_clipboard(&text)?;
+
+    if !setup::is_accessibility_trusted() {
+        eprintln!("Paste simulation skipped: Echo is not trusted for Accessibility.");
+        return Ok("copied_accessibility".to_string());
+    }
 
     let target = state
         .focus_target
@@ -237,30 +357,24 @@ fn paste_transcript(text: String, state: tauri::State<'_, AppState>, app: tauri:
         .map_err(|e| format!("Lock error: {e}"))?
         .clone();
 
-    if target.is_self_app() {
+    if target.is_self_app() || !target.has_target() {
         return Ok("copied".to_string());
     }
 
-    // Hide our window so it doesn't interfere with focus
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_focus();
-        // We don't actually minimize, just let focus go
-    }
-
-    // Restore focus to the target app
     if let Err(e) = target.restore() {
-        eprintln!("Focus restore warning: {e}");
+        eprintln!("Focus restore failed, falling back to clipboard: {e}");
+        return Ok("copied".to_string());
     }
 
-    // Wait for focus to settle
     std::thread::sleep(std::time::Duration::from_millis(250));
 
-    // Simulate Cmd+V / Ctrl+V
-    input::simulate_paste().map_err(|e| {
-        format!("Paste failed (is Accessibility permission granted?): {e}")
-    })?;
-
-    Ok("pasted".to_string())
+    match input::simulate_paste() {
+        Ok(()) => Ok("pasted".to_string()),
+        Err(e) => {
+            eprintln!("Paste simulation failed, text is on clipboard: {e}");
+            Ok("copied_accessibility".to_string())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -347,6 +461,16 @@ fn play_sound_preview(sound: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn pause_media() -> Result<(), String> {
+    media::pause_media()
+}
+
+#[tauri::command]
+fn resume_media() -> Result<(), String> {
+    media::resume_media()
+}
+
+#[tauri::command]
 fn check_model_status(model_size: String, state: tauri::State<'_, AppState>) -> model_download::ModelStatus {
     model_download::check_model_status(&model_size, &state.download_state)
 }
@@ -384,7 +508,11 @@ fn list_transcript_history() -> Vec<history::HistoryItem> {
 
 #[tauri::command]
 fn add_transcript_history(text: String, paste_result: String) -> Result<history::HistoryItem, String> {
-    history::add(&text, &paste_result)
+    let cfg = AppConfig::load();
+    if !cfg.history_enabled {
+        return Err("History is disabled".to_string());
+    }
+    history::add(&text, &paste_result, cfg.history_limit)
 }
 
 #[tauri::command]
@@ -439,6 +567,21 @@ pub fn run() {
             let window = app.get_webview_window("main").unwrap();
             window.set_always_on_top(false).ok();
 
+            #[cfg(target_os = "macos")]
+            unsafe {
+                use objc::runtime::{Class, Object};
+                if let Ok(ns_win) = window.ns_window() {
+                    let ns_window_ptr = ns_win as *mut Object;
+                    if !ns_window_ptr.is_null() {
+                        let ns_color_class = Class::get("NSColor").unwrap();
+                        let clear_color: *mut Object = objc::msg_send![ns_color_class, clearColor];
+                        let _: () = objc::msg_send![ns_window_ptr, setBackgroundColor: clear_color];
+                        let _: () = objc::msg_send![ns_window_ptr, setOpaque: false];
+                    }
+                }
+                apply_main_vibrancy(&window);
+            }
+
             // Hide instead of close when the user clicks the red traffic light.
             // We use hide() to remove the window from the dock / Cmd-Tab, but
             // the webview stays alive so global-shortcut IPC keeps working.
@@ -449,7 +592,6 @@ pub fn run() {
                     let _ = main_for_close.hide();
                     #[cfg(target_os = "macos")]
                     let _ = main_for_close.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    ensure_indicator_visible(main_for_close.app_handle());
                 }
             });
 
@@ -504,6 +646,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            get_setup_status,
+            validate_shortcut,
+            open_setup_help,
+            request_accessibility_permission,
+            reposition_indicator,
             get_screen_size,
             capture_focus,
             start_recording,
@@ -516,6 +663,8 @@ pub fn run() {
             play_chime,
             play_indicator_sound,
             play_sound_preview,
+            pause_media,
+            resume_media,
             check_model_status,
             download_whisper_model,
             get_model_download_progress,

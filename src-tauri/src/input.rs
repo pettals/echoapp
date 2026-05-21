@@ -1,7 +1,45 @@
-#[cfg(not(target_os = "macos"))]
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use std::process::Command;
 use std::time::Duration;
+
+#[cfg(not(target_os = "macos"))]
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+
+#[cfg(target_os = "macos")]
+mod macos_paste {
+    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, KeyCode};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use std::time::Duration;
+
+    pub fn simulate_cmd_v() -> Result<(), String> {
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .map_err(|_| "Could not create CoreGraphics event source".to_string())?;
+
+        let command_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::COMMAND, true)
+            .map_err(|_| "Could not create Command keydown event".to_string())?;
+        command_down.set_flags(CGEventFlags::CGEventFlagCommand);
+
+        let v_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true)
+            .map_err(|_| "Could not create V keydown event".to_string())?;
+        v_down.set_flags(CGEventFlags::CGEventFlagCommand);
+
+        let v_up = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, false)
+            .map_err(|_| "Could not create V keyup event".to_string())?;
+        v_up.set_flags(CGEventFlags::CGEventFlagCommand);
+
+        let command_up = CGEvent::new_keyboard_event(source, KeyCode::COMMAND, false)
+            .map_err(|_| "Could not create Command keyup event".to_string())?;
+
+        command_down.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(20));
+        v_down.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(20));
+        v_up.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(20));
+        command_up.post(CGEventTapLocation::HID);
+
+        Ok(())
+    }
+}
 
 /// Writes text to the system clipboard using platform-native methods.
 pub fn write_clipboard(text: &str) -> Result<(), String> {
@@ -53,24 +91,13 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
 pub fn simulate_paste() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-            .output()
-            .map_err(|e| format!("osascript launch error: {e}"))?;
-
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("osascript paste failed: {err}"));
-        }
-        Ok(())
+        macos_paste::simulate_cmd_v()?;
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         let mut enigo =
             Enigo::new(&Settings::default()).map_err(|e| format!("Enigo init error: {e}"))?;
-
         enigo
             .key(Key::Control, Direction::Press)
             .map_err(|e| format!("Key error: {e}"))?;
@@ -80,6 +107,7 @@ pub fn simulate_paste() -> Result<(), String> {
         enigo
             .key(Key::Control, Direction::Release)
             .map_err(|e| format!("Key error: {e}"))?;
-        Ok(())
     }
+
+    Ok(())
 }

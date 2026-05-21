@@ -1074,11 +1074,14 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 name = "echo"
 version = "0.1.0"
 dependencies = [
+ "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "cpal",
  "dirs 5.0.1",
  "enigo",
  "futures-util",
  "hound",
+ "keyring",
  "objc",
  "reqwest 0.12.28",
  "serde",
@@ -1091,6 +1094,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "whisper-rs",
+ "window-vibrancy",
 ]
 
 [[package]]
@@ -2331,6 +2335,16 @@ dependencies = [
  "bitflags 2.11.1",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "log",
+ "zeroize",
 ]
 
 [[package]]

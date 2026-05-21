@@ -1,12 +1,24 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use hound::{WavSpec, WavWriter};
+use hound::{WavReader, WavSpec, WavWriter};
 use std::io::BufWriter;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
+
+const MIN_SPEECH_RECORDING_SECS: f32 = 0.25;
+const SPEECH_FRAME_MS: u32 = 20;
+const MIN_ACTIVE_SPEECH_SECS: f32 = 0.18;
+const MIN_CONSECUTIVE_SPEECH_SECS: f32 = 0.08;
+const MIN_ACTIVE_RMS: f32 = 0.012;
+const MAX_ADAPTIVE_RMS: f32 = 0.02;
+const MIN_ACTIVE_PEAK: f32 = 0.035;
+const NOISE_MULTIPLIER: f32 = 3.0;
+const LEVEL_RMS_GAIN: f32 = 9.0;
+const LEVEL_PEAK_GAIN: f32 = 1.4;
 
 pub struct SharedLevel(AtomicU32);
 
@@ -26,6 +38,11 @@ impl SharedLevel {
 
 enum Command {
     Stop,
+}
+
+fn visual_level(rms: f32, peak: f32) -> f32 {
+    let lifted = (rms * LEVEL_RMS_GAIN).max(peak * LEVEL_PEAK_GAIN);
+    lifted.clamp(0.0, 1.0).sqrt()
 }
 
 pub struct RecorderHandle {
@@ -203,6 +220,124 @@ pub fn test_mic(device_name: Option<&str>) -> Result<f32, String> {
     Ok(result.min(1.0))
 }
 
+pub fn has_speech(audio_path: &Path) -> Result<bool, String> {
+    let reader = WavReader::open(audio_path).map_err(|e| format!("WAV open error: {e}"))?;
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels as usize;
+
+    if sample_rate == 0 || channels == 0 {
+        return Ok(false);
+    }
+
+    let samples = read_wav_samples(reader)?;
+    let mono = mix_to_mono(&samples, channels);
+    if mono.is_empty() {
+        return Ok(false);
+    }
+
+    let duration_secs = mono.len() as f32 / sample_rate as f32;
+    if duration_secs < MIN_SPEECH_RECORDING_SECS {
+        return Ok(false);
+    }
+
+    let frame_size = ((sample_rate as u64 * SPEECH_FRAME_MS as u64) / 1000)
+        .max(1) as usize;
+    let mut frames = Vec::new();
+
+    for frame in mono.chunks(frame_size) {
+        let mut sum_squares = 0.0f32;
+        let mut peak = 0.0f32;
+
+        for sample in frame {
+            let abs = sample.abs();
+            sum_squares += sample * sample;
+            peak = peak.max(abs);
+        }
+
+        let rms = (sum_squares / frame.len() as f32).sqrt();
+        frames.push((rms, peak));
+    }
+
+    if frames.is_empty() {
+        return Ok(false);
+    }
+
+    let mut rms_values: Vec<f32> = frames.iter().map(|(rms, _)| *rms).collect();
+    rms_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let noise_index = ((rms_values.len() as f32 * 0.2).floor() as usize)
+        .min(rms_values.len().saturating_sub(1));
+    let noise_floor = rms_values[noise_index];
+    let active_rms_threshold =
+        MIN_ACTIVE_RMS.max((noise_floor * NOISE_MULTIPLIER).min(MAX_ADAPTIVE_RMS));
+
+    let frame_secs = frame_size as f32 / sample_rate as f32;
+    let mut active_secs = 0.0f32;
+    let mut consecutive_secs = 0.0f32;
+    let mut max_consecutive_secs = 0.0f32;
+
+    for (rms, peak) in frames {
+        if rms >= active_rms_threshold && peak >= MIN_ACTIVE_PEAK {
+            active_secs += frame_secs;
+            consecutive_secs += frame_secs;
+            max_consecutive_secs = max_consecutive_secs.max(consecutive_secs);
+        } else {
+            consecutive_secs = 0.0;
+        }
+    }
+
+    Ok(active_secs >= MIN_ACTIVE_SPEECH_SECS
+        && max_consecutive_secs >= MIN_CONSECUTIVE_SPEECH_SECS)
+}
+
+fn read_wav_samples<R: std::io::Read + std::io::Seek>(
+    reader: WavReader<R>,
+) -> Result<Vec<f32>, String> {
+    let spec = reader.spec();
+
+    match spec.sample_format {
+        hound::SampleFormat::Int => match spec.bits_per_sample {
+            8 => reader
+                .into_samples::<i8>()
+                .map(|s| s.map(|v| v as f32 / i8::MAX as f32))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("WAV read error: {e}")),
+            16 => reader
+                .into_samples::<i16>()
+                .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("WAV read error: {e}")),
+            24 | 32 => reader
+                .into_samples::<i32>()
+                .map(|s| {
+                    s.map(|v| {
+                        let max = if spec.bits_per_sample == 24 {
+                            8_388_607.0
+                        } else {
+                            i32::MAX as f32
+                        };
+                        (v as f32 / max).clamp(-1.0, 1.0)
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("WAV read error: {e}")),
+            bits => Err(format!("Unsupported WAV bit depth: {bits}")),
+        },
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .map(|s| s.map(|v| v.clamp(-1.0, 1.0)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("WAV read error: {e}")),
+    }
+}
+
+fn mix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
+    samples
+        .chunks(channels)
+        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+        .collect()
+}
+
 fn run_recording(
     cmd_rx: mpsc::Receiver<Command>,
     device_name: Option<&str>,
@@ -252,16 +387,22 @@ fn run_recording(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         let mut peak: f32 = 0.0;
+                        let mut sum_sq: f32 = 0.0;
+                        let mut count: usize = 0;
                         if let Ok(mut guard) = writer_clone.lock() {
                             if let Some(ref mut w) = *guard {
                                 for &sample in data.iter() {
-                                    peak = peak.max(sample.abs());
+                                    let normalized = sample.clamp(-1.0, 1.0);
+                                    peak = peak.max(normalized.abs());
+                                    sum_sq += normalized * normalized;
+                                    count += 1;
                                     let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                                     let _ = w.write_sample(s);
                                 }
                             }
                         }
-                        lvl.store(peak.min(1.0));
+                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        lvl.store(visual_level(rms, peak));
                     },
                     err_fn,
                     None,
@@ -276,15 +417,21 @@ fn run_recording(
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let mut peak: f32 = 0.0;
+                        let mut sum_sq: f32 = 0.0;
+                        let mut count: usize = 0;
                         if let Ok(mut guard) = writer_clone.lock() {
                             if let Some(ref mut w) = *guard {
                                 for &sample in data.iter() {
-                                    peak = peak.max((sample as f32 / i16::MAX as f32).abs());
+                                    let normalized = sample as f32 / i16::MAX as f32;
+                                    peak = peak.max(normalized.abs());
+                                    sum_sq += normalized * normalized;
+                                    count += 1;
                                     let _ = w.write_sample(sample);
                                 }
                             }
                         }
-                        lvl.store(peak.min(1.0));
+                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        lvl.store(visual_level(rms, peak));
                     },
                     err_fn,
                     None,
@@ -299,18 +446,23 @@ fn run_recording(
                     &stream_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         let mut peak: f32 = 0.0;
+                        let mut sum_sq: f32 = 0.0;
+                        let mut count: usize = 0;
                         if let Ok(mut guard) = writer_clone.lock() {
                             if let Some(ref mut w) = *guard {
                                 for &sample in data.iter() {
                                     let normalized =
                                         (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
                                     peak = peak.max(normalized.abs());
+                                    sum_sq += normalized * normalized;
+                                    count += 1;
                                     let s = (normalized * i16::MAX as f32) as i16;
                                     let _ = w.write_sample(s);
                                 }
                             }
                         }
-                        lvl.store(peak.min(1.0));
+                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        lvl.store(visual_level(rms, peak));
                     },
                     err_fn,
                     None,

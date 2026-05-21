@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Echo — UI Preview</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Pacifico&display=swap');
+
+:root {
+  --window-base: #0C0D12;
+  --window-sidebar: rgba(18, 18, 22, 0.45);
+  --window-content: transparent;
+  --surface-card: #1C1C1E;
+  --surface-hover: #2C2C2E;
+  --border-soft: #2C2C2E;
+  --border-faint: rgba(255,255,255,0.04);
+  --text-primary: #FFFFFF;
+  --text-secondary: rgba(255,255,255,0.6);
+  --text-muted: rgba(255,255,255,0.4);
+  --accent-green: #B9FF3D;
+  --accent-blue: #4c7dff;
+  --accent-purple: #8f5cff;
+  --status-green: #B9FF3D;
+  --status-red: #ff6a6a;
+  --status-orange: #ffb454;
+  --radius-window: 16px;
+  --radius-panel: 14px;
+  --radius-control: 9px;
+  --radius-pill: 999px;
+  --duration-fast: 120ms;
+  --easing-standard: cubic-bezier(0.2,0.8,0.2,1);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #060608;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  color: var(--text-primary);
+  font-size: 13px;
+  padding: 32px 24px 60px;
+  gap: 40px;
+}
+
+/* Tab switcher */
+.tabs {
+  display: flex;
+  gap: 8px;
+  background: var(--surface-card);
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-soft);
+}
+.tab-btn {
+  padding: 6px 18px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--easing-standard);
+}
+.tab-btn.active { background: var(--accent-green); color: #000; }
+
+/* App shell */
+.app-shell {
+  width: 780px;
+  height: 540px;
+  display: flex;
+  border-radius: var(--radius-window);
+  overflow: hidden;
+  background: radial-gradient(circle at 10% 20%, rgba(143, 92, 255, 0.15) 0%, transparent 45%),
+              radial-gradient(circle at 90% 80%, rgba(57, 245, 197, 0.12) 0%, transparent 45%),
+              #0C0D12;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 28px 70px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+/* Sidebar */
+.sidebar {
+  width: 176px;
+  min-width: 176px;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 10px 14px;
+  background: var(--window-sidebar);
+  border-right: 1px solid rgba(255,255,255,0.05);
+  backdrop-filter: blur(25px) saturate(1.15);
+  -webkit-backdrop-filter: blur(25px) saturate(1.15);
+  z-index: 2;
+  position: relative;
+}
+.sidebar-logo {
+  padding: 0 8px 20px;
+  font-family: 'Pacifico', 'Brush Script MT', cursive;
+  font-size: 24px;
+  font-weight: 400;
+  color: var(--accent-green);
+  text-shadow: 0 0 16px rgba(185, 255, 61, 0.6);
+  text-transform: lowercase;
+}
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-faint);
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  position: relative;
+  transition: all var(--duration-fast) var(--easing-standard);
+}
+.nav-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+.nav-item.active {
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.nav-item.active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent-green);
+  box-shadow: 0 0 8px rgba(185,255,61,0.4);
+}
+.nav-item.active svg { color: var(--accent-green); }
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* Main content */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--window-content);
+  overflow: hidden;
+}
+.content-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+.content-main-col {
+  flex: 1;
+  padding: 28px 32px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── DICTATE SCREEN ── */
+.dictate-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  text-align: center;
+}
+.state-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  width: 100%;
+}
+.state-icon {
+  width: 160px;
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+.mic-circle {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: rgba(185,255,61,0.05);
+  border: 1.5px solid rgba(185,255,61,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-green);
+  position: relative;
+  filter: drop-shadow(0 0 8px rgba(185, 255, 61, 0.4));
+}
+.mic-circle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.2px solid rgba(185,255,61,0.4);
+  animation: sonarPulse 3s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+  animation-delay: 1s;
+  pointer-events: none;
+}
+.mic-circle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.2px solid rgba(185,255,61,0.45);
+  animation: sonarPulse 3s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+  animation-delay: 2s;
+  pointer-events: none;
+}
+@keyframes sonarPulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.state-label {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 4px;
+}
+.state-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.state-hint kbd {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--border-soft);
+  margin: 0 3px;
+}
+.hero-actions {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  max-width: 380px;
+  margin-top: 20px;
+}
+.neon-pill-btn {
+  width: 100%;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-green);
+  color: #000;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 24px rgba(185,255,61,0.25);
+  transition: all var(--duration-fast) var(--easing-standard);
+}
+.neon-pill-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 32px rgba(185,255,61,0.4); }
+
+/* ── HISTORY SCREEN ── */
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+.panel-header {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.history-list { display: flex; flex-direction: column; gap: 10px; }
+.history-card {
+  padding: 16px 18px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: background var(--duration-fast) var(--easing-standard);
+}
+.history-card:hover { background: var(--surface-hover); }
+.history-meta { display: flex; align-items: center; justify-content: space-between; }
+.history-date { font-size: 11px; color: var(--text-muted); font-weight: 550; }
+.history-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.badge-pasted { color: var(--accent-green); }
+.badge-copied { color: var(--accent-blue); }
+.history-text {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.45;
+  word-break: break-word;
+}
+.history-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
+.history-copy {
+  flex: 1;
+  height: 32px;
+  border-radius: var(--radius-control);
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.06);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--duration-fast) var(--easing-standard);
+}
+.history-copy:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.history-delete {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--easing-standard);
+}
+.history-delete:hover {
+  background: rgba(255, 106, 106, 0.12);
+  color: var(--status-red);
+  border-color: rgba(255, 106, 106, 0.25);
+}
+.history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-panel);
+  font-size: 13px;
+}
+
+/* ── SETTINGS SCREEN ── */
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  overflow-y: auto;
+}
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-faint);
+  gap: 16px;
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-row-label { font-size: 13px; font-weight: 550; color: var(--text-primary); }
+.settings-row-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.settings-input {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-soft);
+  background: rgba(0,0,0,0.2);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  width: 180px;
+}
+.settings-toggle {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent-green);
+  border: none;
+  cursor: pointer;
+  position: relative;
+}
+.settings-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #000;
+}
+.settings-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 0 4px;
+  margin-bottom: 4px;
+  margin-top: 4px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+
+/* Screen panels */
+.screen { display: none; width: 100%; height: 100%; }
+.screen.active { display: flex; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="showScreen('dictate', this)">Dictate</button>
+  <button class="tab-btn" onclick="showScreen('history', this)">History</button>
+  <button class="tab-btn" onclick="showScreen('settings', this)">Settings</button>
+</div>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">echo</div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" id="nav-dictate" onclick="showScreen('dictate', null, this)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+        <span>Dictate</span>
+      </button>
+      <button class="nav-item" id="nav-history" onclick="showScreen('history', null, this)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span>History</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="nav-item" id="nav-settings" onclick="showScreen('settings', null, this)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main-content">
+    <div class="content-body">
+      <div class="content-main-col">
+
+        <!-- DICTATE -->
+        <div class="screen active" id="screen-dictate">
+          <div class="dictate-panel">
+            <div class="state-display">
+              <div class="state-icon">
+                <div class="mic-circle">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M4 10v4" />
+                    <path d="M8 7v10" />
+                    <path d="M12 4v16" />
+                    <path d="M16 7v10" />
+                    <path d="M20 10v4" />
+                  </svg>
+                </div>
+              </div>
+              <p class="state-label">Ready to dictate</p>
+              <p class="state-hint">Press <kbd>⌘D</kbd> or click the button below</p>
+              <div class="hero-actions">
+                <button class="neon-pill-btn">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                  Hold Shortcut to Dictate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- HISTORY -->
+        <div class="screen" id="screen-history">
+          <div class="history-panel">
+            <p class="panel-header">History</p>
+            <div class="history-list">
+              <div class="history-card">
+                <div class="history-meta">
+                  <span class="history-date">Today, 14:32</span>
+                  <span class="history-badge badge-pasted"> Pasted</span>
+                </div>
+                <p class="history-text">Schedule the team sync for Thursday at 3pm and send a calendar invite to everyone on the project.</p>
+                <div class="history-actions">
+                  <button class="history-copy">Copy</button>
+                  <button class="history-delete">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="history-card">
+                <div class="history-meta">
+                  <span class="history-date">Today, 11:08</span>
+                  <span class="history-badge badge-pasted"> Pasted</span>
+                </div>
+                <p class="history-text">Add error handling to the upload function and make sure we log any failures to Sentry.</p>
+                <div class="history-actions">
+                  <button class="history-copy">Copy</button>
+                  <button class="history-delete">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="history-card">
+                <div class="history-meta">
+                  <span class="history-date">Yesterday, 16:45</span>
+                  <span class="history-badge badge-pasted"> Pasted</span>
+                </div>
+                <p class="history-text">Write a short description for the new onboarding flow explaining what Echo does and why it's useful.</p>
+                <div class="history-actions">
+                  <button class="history-copy">Copy</button>
+                  <button class="history-delete">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div class="screen" id="screen-settings">
+          <div class="settings-pane">
+            <p class="panel-header">Settings</p>
+
+            <p class="settings-section-title">AI Provider</p>
+            <div class="settings-group">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-row-label">API Key</div>
+                  <div class="settings-row-desc">Groq API key for transcription</div>
+                </div>
+                <input class="settings-input" type="password" value="gsk_••••••••••••••••" />
+              </div>
+              <div class="settings-row">
+                <div>
+                  <div class="settings-row-label">Model</div>
+                  <div class="settings-row-desc">Whisper model to use</div>
+                </div>
+                <input class="settings-input" value="whisper-large-v3-turbo" />
+              </div>
+            </div>
+
+            <p class="settings-section-title">Shortcut</p>
+            <div class="settings-group">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-row-label">Global Shortcut</div>
+                  <div class="settings-row-desc">Hold to record, release to transcribe</div>
+                </div>
+                <input class="settings-input" value="CommandOrControl+D" />
+              </div>
+            </div>
+
+            <p class="settings-section-title">History</p>
+            <div class="settings-group">
+              <div class="settings-row">
+                <div>
+                  <div class="settings-row-label">Save History</div>
+                  <div class="settings-row-desc">Store transcription history locally</div>
+                </div>
+                <button class="settings-toggle"></button>
+              </div>
+              <div class="settings-row">
+                <div>
+                  <div class="settings-row-label">History Limit</div>
+                  <div class="settings-row-desc">Maximum items to keep</div>
+                </div>
+                <input class="settings-input" value="50" style="width:80px" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showScreen(name, tabBtn, navBtn) {
+  // hide all screens
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+
+  // update top tabs
+  if (tabBtn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    tabBtn.classList.add('active');
+  } else {
+    const idx = { dictate:0, history:1, settings:2 }[name];
+    document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', i===idx));
+  }
+
+  // update sidebar nav
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('nav-' + name)?.classList.add('active');
+}
+</script>
+</body>
+</html>

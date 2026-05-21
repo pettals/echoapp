@@ -3,6 +3,7 @@ mod macos {
     use std::process::Command;
 
     /// Returns the bundle identifier of the frontmost application (e.g. "com.apple.Notes").
+    /// Filters out invalid/placeholder values that osascript can return.
     pub fn capture_frontmost_app() -> Option<String> {
         let output = Command::new("osascript")
             .arg("-e")
@@ -12,7 +13,10 @@ mod macos {
 
         if output.status.success() {
             let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if id.is_empty() {
+            if id.is_empty()
+                || id == "missing value"
+                || !id.contains('.')
+            {
                 None
             } else {
                 Some(id)
@@ -127,8 +131,13 @@ impl FocusTarget {
             #[cfg(target_os = "macos")]
             FocusTarget::MacApp(id) => id == "com.andrewjohn.echo",
             #[cfg(target_os = "windows")]
-            FocusTarget::WinHwnd(_) => false, // hard to know, assume external
-            FocusTarget::None => true,
+            FocusTarget::WinHwnd(_) => false,
+            FocusTarget::None => false,
         }
+    }
+
+    /// Returns true if we have a valid external paste target.
+    pub fn has_target(&self) -> bool {
+        !matches!(self, FocusTarget::None)
     }
 }

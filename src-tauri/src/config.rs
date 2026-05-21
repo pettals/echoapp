@@ -1,3 +1,4 @@
+use crate::secure;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -21,6 +22,14 @@ pub struct AppConfig {
     pub indicator_sound: String,
     #[serde(default = "default_success_sound")]
     pub success_sound: String,
+    #[serde(default)]
+    pub onboarding_completed: bool,
+    #[serde(default = "default_true")]
+    pub history_enabled: bool,
+    #[serde(default = "default_history_limit")]
+    pub history_limit: usize,
+    #[serde(default = "default_appearance_theme")]
+    pub appearance_theme: String,
 }
 
 fn default_model_provider() -> String {
@@ -43,6 +52,14 @@ fn default_success_sound() -> String {
     "glass".to_string()
 }
 
+fn default_history_limit() -> usize {
+    100
+}
+
+fn default_appearance_theme() -> String {
+    "system".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -57,6 +74,10 @@ impl Default for AppConfig {
             sounds_enabled: default_true(),
             indicator_sound: default_indicator_sound(),
             success_sound: default_success_sound(),
+            onboarding_completed: false,
+            history_enabled: true,
+            history_limit: default_history_limit(),
+            appearance_theme: default_appearance_theme(),
         }
     }
 }
@@ -82,16 +103,41 @@ impl AppConfig {
     }
 
     pub fn load() -> Self {
-        Self::config_path()
+        let mut cfg: Self = Self::config_path()
             .ok()
             .and_then(|p| fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        if cfg.groq_api_key.trim().is_empty() {
+            if let Ok(Some(key)) = secure::get_groq_api_key() {
+                cfg.groq_api_key = key;
+            }
+        } else if secure::set_groq_api_key(&cfg.groq_api_key).is_ok() {
+            let mut sanitized = cfg.clone();
+            sanitized.groq_api_key.clear();
+            let _ = sanitized.save_without_secure_migration();
+        }
+
+        cfg
     }
 
     pub fn save(&self) -> Result<(), String> {
+        if !self.groq_api_key.trim().is_empty() {
+            secure::set_groq_api_key(&self.groq_api_key)?;
+        } else {
+            secure::delete_groq_api_key()?;
+        }
+
+        self.save_without_secure_migration()
+    }
+
+    fn save_without_secure_migration(&self) -> Result<(), String> {
         let path = Self::config_path()?;
-        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Serialize error: {e}"))?;
+        let mut sanitized = self.clone();
+        sanitized.groq_api_key.clear();
+        let json = serde_json::to_string_pretty(&sanitized)
+            .map_err(|e| format!("Serialize error: {e}"))?;
         fs::write(path, json).map_err(|e| format!("Write error: {e}"))
     }
 }
