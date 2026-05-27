@@ -1,0 +1,418 @@
+.audio-hud {
+  --hud-black: rgba(0, 0, 0, 0.95);
+  --hud-text: rgba(255, 255, 255, 0.96);
+  --hud-muted: rgba(255, 255, 255, 0.64);
+  --hud-red: #ff3b30;
+  --hud-green: #34c759;
+  --hud-blue: #64d2ff;
+  --hud-motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --hud-ambient: transparent;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--hud-text);
+  outline: none;
+}
+
+.audio-hud--idle {
+  place-items: end center;
+}
+
+.audio-hud__island {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: var(--hud-black);
+  box-shadow: none;
+  isolation: isolate;
+}
+
+.audio-hud:focus-visible .audio-hud__island {
+  outline: 1px solid rgba(255, 255, 255, 0.22);
+  outline-offset: 2px;
+}
+
+.audio-hud__island::before,
+.audio-hud__island::after {
+  position: absolute;
+  content: "";
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0;
+}
+
+.audio-hud__island::before {
+  inset: -8px;
+  z-index: -1;
+  background: radial-gradient(circle at 50% 50%, var(--hud-ambient), transparent 68%);
+  filter: blur(9px);
+  transform: scale(0.96);
+  transition:
+    opacity 180ms var(--hud-motion-ease),
+    transform 220ms var(--hud-motion-ease);
+}
+
+.audio-hud__island::after {
+  inset: 1px;
+  z-index: 0;
+  background: linear-gradient(120deg, transparent 8%, rgba(255, 255, 255, 0.1) 44%, transparent 72%);
+  transform: translateX(-42%);
+  transition: opacity 160ms var(--hud-motion-ease);
+}
+
+.audio-hud__island > * {
+  position: relative;
+  z-index: 1;
+}
+
+.audio-hud--idle .audio-hud__island {
+  width: 56px;
+  height: 14px;
+}
+
+.audio-hud--idle:not(.audio-hud--expanded) .audio-hud__island {
+  overflow: hidden;
+}
+
+.audio-hud--idle.audio-hud--expanded .audio-hud__island {
+  width: 252px;
+  height: 46px;
+  overflow: visible;
+}
+
+.audio-hud--recording .audio-hud__island,
+.audio-hud--processing .audio-hud__island {
+  width: 176px;
+  height: 34px;
+}
+
+.audio-hud--complete .audio-hud__island {
+  width: 132px;
+  height: 34px;
+}
+
+.audio-hud--copy .audio-hud__island {
+  width: 420px;
+  height: 92px;
+  border-radius: 24px;
+}
+
+.audio-hud--error .audio-hud__island {
+  width: 240px;
+  min-height: 54px;
+  border-radius: 24px;
+}
+
+.audio-hud--recording {
+  --hud-ambient: rgba(255, 59, 48, 0.34);
+}
+
+.audio-hud--processing {
+  --hud-ambient: rgba(100, 210, 255, 0.26);
+}
+
+.audio-hud--complete,
+.audio-hud--copy {
+  --hud-ambient: rgba(52, 199, 89, 0.28);
+}
+
+.audio-hud--error {
+  --hud-ambient: rgba(255, 69, 58, 0.32);
+}
+
+.audio-hud--recording .audio-hud__island::before,
+.audio-hud--processing .audio-hud__island::before,
+.audio-hud--complete .audio-hud__island::before,
+.audio-hud--copy .audio-hud__island::before,
+.audio-hud--error .audio-hud__island::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.audio-hud--recording .audio-hud__island::before {
+  animation: audio-hud-breathe 1.25s ease-in-out infinite alternate;
+}
+
+.audio-hud--processing .audio-hud__island::after {
+  opacity: 1;
+  animation: audio-hud-sheen 1.05s ease-in-out infinite;
+}
+
+.audio-hud__compact-mark {
+  width: 22px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.audio-hud__idle-actions {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 38px minmax(34px, 1fr) 38px;
+  align-items: center;
+  justify-items: center;
+  padding: 0 4px;
+}
+
+.audio-hud__action {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: white;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 120ms var(--hud-motion-ease),
+    transform 120ms var(--hud-motion-ease);
+}
+
+.audio-hud__action-circle {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition:
+    box-shadow 120ms var(--hud-motion-ease),
+    filter 120ms var(--hud-motion-ease),
+    transform 120ms var(--hud-motion-ease);
+}
+
+.audio-hud__action--mic .audio-hud__action-circle {
+  background: var(--hud-red);
+}
+
+.audio-hud__action--notepad .audio-hud__action-circle {
+  background: var(--hud-green);
+}
+
+.audio-hud__action:hover .audio-hud__action-circle,
+.audio-hud__action:focus-visible .audio-hud__action-circle {
+  filter: brightness(1.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 6px 14px rgba(0, 0, 0, 0.24);
+  transform: translateY(-1px);
+}
+
+.audio-hud__center-divider {
+  width: 38px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.audio-hud__shortcut-label {
+  position: absolute;
+  top: -23px;
+  left: 50%;
+  z-index: 2;
+  max-width: 116px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(0, 0, 0, 0.86);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  translate: -50% 0;
+  will-change: opacity, transform;
+}
+
+.audio-hud__waveform {
+  width: 150px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.audio-hud__bar {
+  width: 2px;
+  height: var(--bar-height);
+  min-height: 4px;
+  max-height: 27px;
+  display: block;
+  flex: 0 0 2px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.74;
+  transform-origin: 50% 50%;
+  transition:
+    height 85ms ease,
+    opacity 120ms ease;
+}
+
+.audio-hud--recording .audio-hud__bar {
+  animation: audio-hud-wave 0.78s ease-in-out infinite alternate;
+  animation-delay: var(--bar-delay);
+}
+
+.audio-hud--processing .audio-hud__bar {
+  animation: audio-hud-process 1.15s ease-in-out infinite alternate;
+  animation-delay: var(--bar-delay);
+  opacity: 0.44;
+}
+
+.audio-hud__success {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+  background: rgba(52, 199, 89, 0.96);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 0 18px rgba(52, 199, 89, 0.2);
+}
+
+.audio-hud__copy-review {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+}
+
+.audio-hud__copy-text {
+  min-width: 0;
+  margin: 0;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.28;
+  text-align: left;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.audio-hud__copy-button,
+.audio-hud__countdown {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+}
+
+.audio-hud__copy-button {
+  border: 0;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition:
+    background 140ms var(--hud-motion-ease),
+    transform 140ms var(--hud-motion-ease);
+}
+
+.audio-hud__copy-button:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.04);
+}
+
+.audio-hud__countdown {
+  --copy-progress: 1;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    conic-gradient(rgba(255, 255, 255, 0.28) calc(var(--copy-progress) * 1turn), rgba(255, 255, 255, 0.1) 0),
+    rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  font-weight: 800;
+  transition: background 120ms linear;
+}
+
+.audio-hud__error {
+  max-width: 210px;
+  margin: 0;
+  padding: 0 12px;
+  color: rgba(255, 238, 240, 0.96);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.24;
+  text-align: center;
+}
+
+@keyframes audio-hud-breathe {
+  from {
+    opacity: 0.58;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes audio-hud-sheen {
+  0% {
+    transform: translateX(-54%);
+  }
+  55%,
+  100% {
+    transform: translateX(58%);
+  }
+}
+
+@keyframes audio-hud-wave {
+  from {
+    transform: scaleY(0.58);
+    opacity: 0.64;
+  }
+  to {
+    transform: scaleY(var(--bar-scale));
+    opacity: 1;
+  }
+}
+
+@keyframes audio-hud-process {
+  from {
+    transform: scaleY(0.36);
+  }
+  to {
+    transform: scaleY(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audio-hud,
+  .audio-hud__island,
+  .audio-hud__island::before,
+  .audio-hud__island::after,
+  .audio-hud__shortcut-label,
+  .audio-hud__bar,
+  .audio-hud__action,
+  .audio-hud__action-circle,
+  .audio-hud__copy-button {
+    animation: none;
+    transition-duration: 1ms;
+  }
+
+  .audio-hud--recording .audio-hud__bar,
+  .audio-hud--processing .audio-hud__bar {
+    animation: none;
+  }
+}

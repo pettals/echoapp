@@ -1,4 +1,14 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+} from "react";
+import { motion, useReducedMotion } from "motion/react";
 
 type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
@@ -51,6 +61,7 @@ export function IconButton({
     <button
       aria-label={label}
       className={`ui-icon-button ui-icon-button--${tone} ${className}`.trim()}
+      data-no-window-drag
       title={label}
       type={type}
       {...props}
@@ -60,8 +71,16 @@ export function IconButton({
   );
 }
 
-export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <section className={`ui-card ${className}`.trim()}>{children}</section>;
+interface CardProps extends HTMLAttributes<HTMLElement> {
+  children: ReactNode;
+}
+
+export function Card({ children, className = "", ...props }: CardProps) {
+  return (
+    <section className={`ui-card ${className}`.trim()} {...props}>
+      {children}
+    </section>
+  );
 }
 
 interface ChipProps {
@@ -157,9 +176,51 @@ export function SegmentedControl<T extends string>({
   options,
   value,
 }: SegmentedControlProps<T>) {
+  const reduceMotion = useReducedMotion() ?? false;
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [selector, setSelector] = useState<{ left: number; width: number; visible: boolean }>({
+    left: 0,
+    width: 0,
+    visible: false,
+  });
+
+  useEffect(() => {
+    const activeIndex = options.findIndex((option) => option.value === value);
+    const activeEl = itemRefs.current[activeIndex];
+    const parent = activeEl?.parentElement;
+
+    if (!activeEl || !parent) {
+      setSelector((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    const update = () => {
+      const parentRect = parent.getBoundingClientRect();
+      const itemRect = activeEl.getBoundingClientRect();
+      setSelector({
+        left: itemRect.left - parentRect.left,
+        width: itemRect.width,
+        visible: true,
+      });
+    };
+
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [options, value]);
+
   return (
     <div className="ui-segmented" aria-label={label} role="radiogroup">
-      {options.map((option) => (
+      {selector.visible && (
+        <motion.div
+          aria-hidden
+          className="ui-segmented__selector"
+          initial={false}
+          animate={{ x: selector.left, width: selector.width }}
+          transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 520, damping: 38 }}
+        />
+      )}
+      {options.map((option, index) => (
         <button
           aria-checked={value === option.value}
           className={`ui-segmented__item${value === option.value ? " is-active" : ""}`}
@@ -167,6 +228,9 @@ export function SegmentedControl<T extends string>({
           onClick={() => onChange(option.value)}
           role="radio"
           type="button"
+          ref={(node) => {
+            itemRefs.current[index] = node;
+          }}
         >
           {option.icon}
           <span>{option.label}</span>

@@ -22,6 +22,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Groq provider and local Whisper provider.
 - Download and manage local small and medium Whisper models.
 - Transcription history with copy, delete, and clear.
+- Local Notepad for autosaved notes, markdown preview, copy/delete, and note-specific dictation insertion.
 - Configurable shortcut, mic device, sounds, provider, and model choices.
 - Tray/menu bar app lifecycle.
 - Production packaging, signing/notarization plan, and release checklist.
@@ -38,7 +39,9 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - First run must not strand users in Settings without a clear next action.
 - Echo must expose a visible setup state for mic, shortcut, provider/model, and paste permissions.
 - Auto-paste must gracefully fall back to copying without losing the transcript.
+- If no external paste target is captured, the persistent HUD must show the transcript with a copy action and a short countdown before returning to idle.
 - History must be bounded, user-clearable, and documented.
+- Notepad notes must remain local, autosave while editing, and support dictation insertion without triggering external paste automation.
 - Local mode must explain model sizes, disk use, download state, and offline behavior.
 - Windows must not present macOS-only affordances as working features.
 - The desktop UI should use the custom Echo design system: clean light/dark themes, persistent sidebar navigation, quiet native surfaces, compact desktop density, and reduced-motion-aware transitions.

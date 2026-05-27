@@ -136,7 +136,7 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
 
 #[cfg(target_os = "macos")]
 mod macos_accessibility {
-    use core_foundation::base::{TCFType, CFTypeRef};
+    use core_foundation::base::{CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::dictionary::CFDictionary;
     use core_foundation::string::{CFString, CFStringRef};
@@ -217,13 +217,19 @@ fn accessibility_check() -> SetupCheck {
     )
 }
 
+pub fn get_status_with_credential_error(config: &AppConfig, credential_error: &str) -> SetupStatus {
+    get_status_inner(config, Some(credential_error))
+}
+
 pub fn get_status(config: &AppConfig) -> SetupStatus {
+    get_status_inner(config, None)
+}
+
+fn get_status_inner(config: &AppConfig, credential_error: Option<&str>) -> SetupStatus {
     let mut checks = Vec::new();
 
     if config.model_provider == "api" {
-        let key_available = !config.groq_api_key.trim().is_empty()
-            || matches!(secure::get_groq_api_key(), Ok(Some(_)));
-        checks.push(if key_available {
+        let provider_check = if !config.groq_api_key.trim().is_empty() {
             check(
                 "provider",
                 "Provider",
@@ -232,14 +238,34 @@ pub fn get_status(config: &AppConfig) -> SetupStatus {
                 None,
             )
         } else {
-            check(
-                "provider",
-                "Provider",
-                "error",
-                "Add a Groq API key or switch to a downloaded local Whisper model.",
-                Some("Open Settings"),
-            )
-        });
+            match credential_error
+                .map(|e| Err(e.to_string()))
+                .unwrap_or_else(|| secure::get_groq_api_key().map(|key| key.map(|_| ())))
+            {
+                Ok(Some(())) => check(
+                    "provider",
+                    "Provider",
+                    "ok",
+                    "Groq API key is configured in secure storage.",
+                    None,
+                ),
+                Ok(None) => check(
+                    "provider",
+                    "Provider",
+                    "error",
+                    "Add a Groq API key or switch to a downloaded local Whisper model.",
+                    Some("Open Settings"),
+                ),
+                Err(e) => check(
+                    "provider",
+                    "Provider",
+                    "error",
+                    &format!("Echo could not read the Groq API key from secure storage: {e}"),
+                    Some("Open Settings"),
+                ),
+            }
+        };
+        checks.push(provider_check);
     } else {
         let downloaded = whisper::is_model_downloaded(&config.local_model_size).unwrap_or(false);
         checks.push(if downloaded {

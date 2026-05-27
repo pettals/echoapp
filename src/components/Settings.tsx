@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  CheckCircle2,
   Cloud,
   Command,
   Cpu,
@@ -16,7 +17,9 @@ import {
   X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { AppConfig, AppearanceTheme } from "../App";
+import groqLogo from "../assets/groq-logo.svg";
 import {
   Alert,
   Button,
@@ -56,6 +59,13 @@ interface SetupCheck {
 interface SetupStatus {
   ready: boolean;
   checks: SetupCheck[];
+}
+
+interface GroqReadiness {
+  ok: boolean;
+  message: string;
+  transcription_model_ok: boolean;
+  cleanup_model_ok: boolean;
 }
 
 interface SettingsProps {
@@ -125,6 +135,20 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return String(error);
+}
+
 function SettingsSection({
   children,
   icon,
@@ -134,41 +158,65 @@ function SettingsSection({
   icon: React.ReactNode;
   title: string;
 }) {
+  const reduceMotion = useReducedMotion() ?? false;
+
   return (
-    <Card className="settings-section">
+    <motion.section
+      className="ui-card settings-section"
+      initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+    >
       <div className="settings-section__header">
         <span className="settings-section-icon">{icon}</span>
         <h3>{title}</h3>
       </div>
       <div className="settings-section__body">{children}</div>
-    </Card>
+    </motion.section>
   );
 }
 
 function ProviderCard({
   active,
+  brand,
   description,
   icon,
   label,
   onClick,
 }: {
   active: boolean;
+  brand: "groq" | "local";
   description: string;
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
 }) {
+  const reduceMotion = useReducedMotion() ?? false;
+
   return (
-    <button
+    <motion.button
       type="button"
-      className={`provider-card${active ? " provider-card--active" : ""}`}
+      className={`provider-card provider-card--${brand}${active ? " provider-card--active" : ""}`}
       aria-pressed={active}
       onClick={onClick}
+      whileHover={reduceMotion ? undefined : { y: -1 }}
+      whileTap={reduceMotion ? undefined : { scale: 0.98 }}
+      animate={active && !reduceMotion ? { scale: 1.01 } : { scale: 1 }}
+      transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
     >
       <span className="provider-card-icon">{icon}</span>
-      <strong>{label}</strong>
+      <div className="provider-card__title">
+        <strong>{label}</strong>
+        {brand === "groq" && (
+          <img
+            className="provider-card__brandmark"
+            src={groqLogo}
+            alt="Groq"
+          />
+        )}
+      </div>
       <span>{description}</span>
-    </button>
+    </motion.button>
   );
 }
 
@@ -176,6 +224,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState("");
+  const reduceMotion = useReducedMotion() ?? false;
 
   const checkStatus = useCallback(async () => {
     if (!HAS_TAURI) {
@@ -242,7 +291,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       await invoke("download_whisper_model", { modelSize });
       await checkStatus();
     } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
+      setError(formatErrorMessage(e));
       await checkStatus();
     }
   };
@@ -262,7 +311,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       await invoke("delete_whisper_model", { modelSize });
       await checkStatus();
     } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
+      setError(formatErrorMessage(e));
     }
   };
 
@@ -285,18 +334,39 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
         </Chip>
       </div>
 
-      {status.downloading && (
-        <div className="download-progress">
-          <Progress value={progress?.percentage} />
-          <span>
-            {progress
-              ? `${formatBytes(progress.bytes_downloaded)} / ${formatBytes(progress.total_bytes)} (${progress.percentage.toFixed(0)}%)`
-              : "Starting download..."}
-          </span>
-        </div>
-      )}
+      <AnimatePresence initial={false} mode="wait">
+        {status.downloading && (
+          <motion.div
+            key="download-progress"
+            className="download-progress"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+          >
+            <Progress value={progress?.percentage} />
+            <span>
+              {progress
+                ? `${formatBytes(progress.bytes_downloaded)} / ${formatBytes(progress.total_bytes)} (${progress.percentage.toFixed(0)}%)`
+                : "Starting download..."}
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {error && <Alert tone="error">{error}</Alert>}
+      <AnimatePresence initial={false}>
+        {error && (
+          <motion.div
+            key="download-error"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+          >
+            <Alert tone="error">{error}</Alert>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="settings-row">
         {!status.downloaded && !status.downloading && (
@@ -314,6 +384,40 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
   );
 }
 
+function PermissionCard({
+  granted,
+  children,
+  icon,
+  onAllow,
+  tone = "info",
+}: {
+  granted: boolean;
+  children: React.ReactNode;
+  icon: React.ReactNode;
+  onAllow: () => void;
+  tone?: "info" | "warning";
+}) {
+  return (
+    <div className={`permission-card permission-card--${tone}`}>
+      <span className="permission-card__icon">{icon}</span>
+      <p>{children}</p>
+      {granted ? (
+        <span
+          className="permission-card__status"
+          aria-label="Permission granted"
+          title="Permission granted"
+        >
+          <CheckCircle2 size={18} />
+        </span>
+      ) : (
+        <Button variant="primary" size="sm" onClick={onAllow}>
+          Allow
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export default function Settings({
   config,
   onSave,
@@ -325,12 +429,19 @@ export default function Settings({
 }: SettingsProps) {
   const [form, setForm] = useState<AppConfig>({ ...config });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [groqTest, setGroqTest] = useState<{
+    message: string;
+    signature: string;
+    status: "idle" | "testing" | "success" | "warning" | "error";
+  }>({ message: "", signature: "", status: "idle" });
   const [devices, setDevices] = useState<string[]>([]);
   const [micTestState, setMicTestState] = useState<"idle" | "testing" | "success" | "fail">("idle");
   const [micLevel, setMicLevel] = useState(0);
   const [shortcutCaptureHint, setShortcutCaptureHint] = useState(
     "Click the field, then press your shortcut."
   );
+  const reduceMotion = useReducedMotion() ?? false;
 
   useEffect(() => {
     setForm({ ...config });
@@ -368,11 +479,91 @@ export default function Settings({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaveError("");
+
+    const nextForm = {
+      ...form,
+      groq_api_key: form.groq_api_key.trim(),
+    };
+
+    if (nextForm.model_provider === "api") {
+      if (!nextForm.groq_api_key) {
+        setSaveError("Enter a Groq API key or switch to a local Whisper model.");
+        return;
+      }
+      if (!nextForm.groq_api_key.startsWith("gsk_")) {
+        setSaveError("Groq API keys usually start with gsk_. Check the key and try again.");
+        return;
+      }
+    }
+
     setSaving(true);
     try {
-      await onSave(form);
+      setForm(nextForm);
+      await onSave(nextForm);
+    } catch (e) {
+      setSaveError(formatErrorMessage(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const groqTestSignature = [
+    form.groq_api_key.trim(),
+    form.transcription_model,
+    form.cleanup_model,
+    String(form.cleanup_enabled),
+  ].join("|");
+
+  const handleTestGroqConnection = async () => {
+    const nextForm = {
+      ...form,
+      groq_api_key: form.groq_api_key.trim(),
+    };
+    const signature = [
+      nextForm.groq_api_key,
+      nextForm.transcription_model,
+      nextForm.cleanup_model,
+      String(nextForm.cleanup_enabled),
+    ].join("|");
+
+    if (!nextForm.groq_api_key) {
+      setGroqTest({
+        message: "Enter a Groq API key before testing the connection.",
+        signature,
+        status: "error",
+      });
+      return;
+    }
+
+    setGroqTest({ message: "Testing Groq connection...", signature, status: "testing" });
+
+    if (!HAS_TAURI) {
+      window.setTimeout(() => {
+        setGroqTest({
+          message: "Groq connection looks good in preview mode.",
+          signature,
+          status: "success",
+        });
+      }, 500);
+      return;
+    }
+
+    try {
+      const readiness = await invoke<GroqReadiness>("test_groq_connection", {
+        config: nextForm,
+      });
+      setGroqTest({
+        message: readiness.message,
+        signature,
+        status: readiness.ok ? "success" : "warning",
+      });
+    } catch (e) {
+      setGroqTest({
+        message: formatErrorMessage(e),
+        signature,
+        status: "error",
+      });
     }
   };
 
@@ -401,6 +592,20 @@ export default function Settings({
     setTimeout(() => setMicTestState("idle"), 4000);
   };
 
+  const handleAllowMicrophone = async () => {
+    if (HAS_TAURI) {
+      await invoke("open_setup_help", { target: "microphone" }).catch(console.error);
+    }
+    await onRefreshSetup?.();
+  };
+
+  const handleAllowAccessibility = async () => {
+    if (HAS_TAURI) {
+      await invoke("request_accessibility_permission").catch(console.error);
+    }
+    await onRefreshSetup?.();
+  };
+
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -423,9 +628,21 @@ export default function Settings({
 
   const canCancel = config.model_provider === "local" || !!config.groq_api_key;
   const ready = setupStatus?.ready;
+  const microphoneGranted = setupStatus?.checks.some(
+    (check) => check.id === "microphone" && check.status === "ok"
+  ) ?? false;
+  const accessibilityGranted = setupStatus?.checks.some(
+    (check) => check.id === "paste" && check.status === "ok"
+  ) ?? false;
 
   return (
-    <form className="settings-pane" onSubmit={handleSubmit}>
+    <motion.form
+      className="settings-pane"
+      onSubmit={handleSubmit}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+    >
       <div className="page-heading page-heading--split">
         <div>
           <p>Preferences</p>
@@ -435,7 +652,13 @@ export default function Settings({
         <Chip tone={ready ? "success" : "warning"}>{ready ? "Ready" : "Needs setup"}</Chip>
       </div>
 
-      <Card className="settings-readiness-card" aria-label="Setup readiness">
+      <motion.section
+        className="ui-card settings-readiness-card"
+        aria-label="Setup readiness"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+      >
         <div>
           <strong>Setup readiness</strong>
           <span>Groq keys stay in the OS credential store. Keep checks green before release QA.</span>
@@ -457,7 +680,7 @@ export default function Settings({
             ))}
           </div>
         )}
-      </Card>
+      </motion.section>
 
       <SettingsSection icon={<Monitor size={18} />} title="Appearance">
         <SegmentedControl<AppearanceTheme>
@@ -479,6 +702,7 @@ export default function Settings({
         <div className="settings-grid settings-grid--two">
           <ProviderCard
             active={form.model_provider === "api"}
+            brand="groq"
             icon={<Sparkles size={18} />}
             label="Groq API"
             description="Online, fast"
@@ -486,6 +710,7 @@ export default function Settings({
           />
           <ProviderCard
             active={form.model_provider === "local"}
+            brand="local"
             icon={<Cpu size={18} />}
             label="Local"
             description="Offline, private"
@@ -515,6 +740,60 @@ export default function Settings({
                 </>
               }
             />
+            <div className="settings-row settings-row--wrap">
+              <Button
+                disabled={groqTest.status === "testing"}
+                icon={<RefreshCw size={15} />}
+                onClick={() => void handleTestGroqConnection()}
+                variant="secondary"
+              >
+                {groqTest.status === "testing" ? "Testing..." : "Test Groq"}
+              </Button>
+              {groqTest.message && groqTest.signature === groqTestSignature && (
+                <Chip
+                  tone={
+                    groqTest.status === "success"
+                      ? "success"
+                      : groqTest.status === "warning"
+                        ? "warning"
+                        : groqTest.status === "testing"
+                          ? "accent"
+                          : "error"
+                  }
+                >
+                  {groqTest.status === "testing"
+                    ? "Checking"
+                    : groqTest.status === "success"
+                      ? "Ready"
+                      : "Needs attention"}
+                </Chip>
+              )}
+            </div>
+            <AnimatePresence initial={false}>
+              {groqTest.message && groqTest.signature === groqTestSignature && (
+                <motion.div
+                  key={`${groqTest.status}-${groqTest.message}`}
+                  initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                >
+                  <Alert
+                    tone={
+                      groqTest.status === "success"
+                        ? "success"
+                        : groqTest.status === "warning"
+                          ? "warning"
+                          : groqTest.status === "testing"
+                            ? "info"
+                            : "error"
+                    }
+                  >
+                    {groqTest.message}
+                  </Alert>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </SettingsSection>
 
           <SettingsSection icon={<Sparkles size={18} />} title="AI Models">
@@ -606,23 +885,66 @@ export default function Settings({
             {micTestState === "testing" ? "Listening..." : "Test Microphone"}
           </Button>
 
-          {(micTestState === "testing" || micTestState === "success") && (
-            <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
-          )}
+          <AnimatePresence initial={false} mode="wait">
+            {(micTestState === "testing" || micTestState === "success") && (
+              <motion.div
+                key={micTestState === "testing" ? "mic-test-progress" : "mic-test-level"}
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+              >
+                <Progress
+                  value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {micTestState === "success" && <Alert tone="success">Microphone working</Alert>}
-          {micTestState === "fail" && <Alert tone="error">No audio detected</Alert>}
+          <AnimatePresence initial={false}>
+            {micTestState === "success" && (
+              <motion.div
+                key="mic-test-success"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+              >
+                <Alert tone="success">Microphone working</Alert>
+              </motion.div>
+            )}
+            {micTestState === "fail" && (
+              <motion.div
+                key="mic-test-fail"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+              >
+                <Alert tone="error">No audio detected</Alert>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </SettingsSection>
 
       <SettingsSection icon={<Shield size={18} />} title="Permissions">
         <div className="settings-grid settings-grid--two">
-          <Alert tone="info">
+          <PermissionCard
+            granted={microphoneGranted}
+            icon={<span className="sf-symbol sf-symbol--mic-circle" aria-hidden />}
+            onAllow={() => void handleAllowMicrophone()}
+          >
             Microphone access is required to record your voice. Use Test Microphone after granting access.
-          </Alert>
-          <Alert tone="warning">
+          </PermissionCard>
+          <PermissionCard
+            granted={accessibilityGranted}
+            icon={<span className="sf-symbol sf-symbol--accessibility" aria-hidden />}
+            onAllow={() => void handleAllowAccessibility()}
+            tone={accessibilityGranted ? "info" : "warning"}
+          >
             On macOS, enable Echo in Accessibility for automatic paste. If blocked, Echo copies the transcript.
-          </Alert>
+          </PermissionCard>
         </div>
       </SettingsSection>
 
@@ -688,7 +1010,8 @@ export default function Settings({
           </Button>
         )}
       </div>
-    </form>
+      {saveError && <Alert tone="error">{saveError}</Alert>}
+    </motion.form>
   );
 }
 

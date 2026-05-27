@@ -13,10 +13,7 @@ mod macos {
 
         if output.status.success() {
             let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if id.is_empty()
-                || id == "missing value"
-                || !id.contains('.')
-            {
+            if id.is_empty() || id == "missing value" || !id.contains('.') {
                 None
             } else {
                 Some(id)
@@ -28,10 +25,7 @@ mod macos {
 
     /// Activates the application with the given bundle identifier.
     pub fn activate_app(bundle_id: &str) -> Result<(), String> {
-        let script = format!(
-            "tell application id \"{}\" to activate",
-            bundle_id
-        );
+        let script = format!("tell application id \"{}\" to activate", bundle_id);
         let output = Command::new("osascript")
             .arg("-e")
             .arg(&script)

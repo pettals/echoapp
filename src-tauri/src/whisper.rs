@@ -10,7 +10,10 @@ pub fn model_path(model_size: &str) -> Result<PathBuf, String> {
 
 pub fn is_model_downloaded(model_size: &str) -> Result<bool, String> {
     let path = model_path(model_size)?;
-    Ok(path.exists() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false))
+    Ok(path.exists()
+        && std::fs::metadata(&path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false))
 }
 
 /// Load WAV file and convert to 16kHz mono f32 samples as required by Whisper.
@@ -88,7 +91,9 @@ pub fn transcribe_local(audio_path: &Path, model_size: &str) -> Result<String, S
     params.set_language(Some("en"));
     params.set_suppress_blank(true);
 
-    let mut state = ctx.create_state().map_err(|e| format!("State create error: {e}"))?;
+    let mut state = ctx
+        .create_state()
+        .map_err(|e| format!("State create error: {e}"))?;
     state
         .full(params, &audio_data)
         .map_err(|e| format!("Whisper inference error: {e}"))?;

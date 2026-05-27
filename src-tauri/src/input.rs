@@ -57,7 +57,9 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
                 .map_err(|e| format!("pbcopy write error: {e}"))?;
             drop(stdin);
         }
-        child.wait().map_err(|e| format!("pbcopy wait error: {e}"))?;
+        child
+            .wait()
+            .map_err(|e| format!("pbcopy wait error: {e}"))?;
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }

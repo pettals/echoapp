@@ -60,7 +60,11 @@ impl RecorderHandle {
         }
     }
 
-    pub fn start(&mut self, device_name: Option<&str>, level: Arc<SharedLevel>) -> Result<(), String> {
+    pub fn start(
+        &mut self,
+        device_name: Option<&str>,
+        level: Arc<SharedLevel>,
+    ) -> Result<(), String> {
         if self.recording {
             return Err("Already recording".to_string());
         }
@@ -121,8 +125,10 @@ fn get_device(device_name: Option<&str>) -> Result<cpal::Device, String> {
         }
     }
 
-    host.default_input_device()
-        .ok_or("No input device available. Check System Settings > Privacy & Security > Microphone.".to_string())
+    host.default_input_device().ok_or(
+        "No input device available. Check System Settings > Privacy & Security > Microphone."
+            .to_string(),
+    )
 }
 
 pub fn list_devices() -> Result<Vec<String>, String> {
@@ -241,8 +247,7 @@ pub fn has_speech(audio_path: &Path) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let frame_size = ((sample_rate as u64 * SPEECH_FRAME_MS as u64) / 1000)
-        .max(1) as usize;
+    let frame_size = ((sample_rate as u64 * SPEECH_FRAME_MS as u64) / 1000).max(1) as usize;
     let mut frames = Vec::new();
 
     for frame in mono.chunks(frame_size) {
@@ -265,8 +270,8 @@ pub fn has_speech(audio_path: &Path) -> Result<bool, String> {
 
     let mut rms_values: Vec<f32> = frames.iter().map(|(rms, _)| *rms).collect();
     rms_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let noise_index = ((rms_values.len() as f32 * 0.2).floor() as usize)
-        .min(rms_values.len().saturating_sub(1));
+    let noise_index =
+        ((rms_values.len() as f32 * 0.2).floor() as usize).min(rms_values.len().saturating_sub(1));
     let noise_floor = rms_values[noise_index];
     let active_rms_threshold =
         MIN_ACTIVE_RMS.max((noise_floor * NOISE_MULTIPLIER).min(MAX_ADAPTIVE_RMS));
@@ -286,8 +291,10 @@ pub fn has_speech(audio_path: &Path) -> Result<bool, String> {
         }
     }
 
-    Ok(active_secs >= MIN_ACTIVE_SPEECH_SECS
-        && max_consecutive_secs >= MIN_CONSECUTIVE_SPEECH_SECS)
+    Ok(
+        active_secs >= MIN_ACTIVE_SPEECH_SECS
+            && max_consecutive_secs >= MIN_CONSECUTIVE_SPEECH_SECS,
+    )
 }
 
 fn read_wav_samples<R: std::io::Read + std::io::Seek>(
@@ -401,7 +408,11 @@ fn run_recording(
                                 }
                             }
                         }
-                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        let rms = if count > 0 {
+                            (sum_sq / count as f32).sqrt()
+                        } else {
+                            0.0
+                        };
                         lvl.store(visual_level(rms, peak));
                     },
                     err_fn,
@@ -430,7 +441,11 @@ fn run_recording(
                                 }
                             }
                         }
-                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        let rms = if count > 0 {
+                            (sum_sq / count as f32).sqrt()
+                        } else {
+                            0.0
+                        };
                         lvl.store(visual_level(rms, peak));
                     },
                     err_fn,
@@ -451,8 +466,7 @@ fn run_recording(
                         if let Ok(mut guard) = writer_clone.lock() {
                             if let Some(ref mut w) = *guard {
                                 for &sample in data.iter() {
-                                    let normalized =
-                                        (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
+                                    let normalized = (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
                                     peak = peak.max(normalized.abs());
                                     sum_sq += normalized * normalized;
                                     count += 1;
@@ -461,7 +475,11 @@ fn run_recording(
                                 }
                             }
                         }
-                        let rms = if count > 0 { (sum_sq / count as f32).sqrt() } else { 0.0 };
+                        let rms = if count > 0 {
+                            (sum_sq / count as f32).sqrt()
+                        } else {
+                            0.0
+                        };
                         lvl.store(visual_level(rms, peak));
                     },
                     err_fn,

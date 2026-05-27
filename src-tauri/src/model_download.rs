@@ -55,7 +55,11 @@ impl DownloadState {
             bytes_downloaded: downloaded,
             total_bytes: total,
             percentage: pct,
-            model_size: self.model_size.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            model_size: self
+                .model_size
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 }
@@ -63,7 +67,11 @@ impl DownloadState {
 pub fn check_model_status(model_size: &str, dl_state: &DownloadState) -> ModelStatus {
     let downloaded = whisper::is_model_downloaded(model_size).unwrap_or(false);
     let is_active = dl_state.active.load(Ordering::Relaxed);
-    let active_model = dl_state.model_size.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let active_model = dl_state
+        .model_size
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let downloading = is_active && active_model == model_size;
     let file_size = if downloaded {
         whisper::model_path(model_size)
@@ -143,7 +151,9 @@ async fn do_download(model_size: &str, state: &DownloadState) -> Result<(), Stri
         state.bytes_downloaded.store(downloaded, Ordering::Relaxed);
     }
 
-    file.flush().await.map_err(|e| format!("Flush error: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {e}"))?;
     drop(file);
 
     tokio::fs::rename(&tmp_path, &dest)

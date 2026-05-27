@@ -6,6 +6,7 @@
 - [x] Add CI checks for TypeScript build and Rust `cargo check`.
 - [x] Add setup/status UI for provider, model, mic, shortcut, and paste readiness.
 - [x] Move Groq API key save/load behind OS secure storage while keeping config backwards compatible.
+- [x] Harden Groq runtime integration with connection testing, typed API errors, upload preflight, and cleanup fallback.
 - [x] Add shortcut validation, registration error UI, and retry guidance.
 - [x] Add macOS permission help for Microphone and Accessibility.
 - [ ] Harden paste/focus behavior on macOS across Notes, Safari/Chrome, Slack, Mail, Messages, VS Code, and text fields in unfocused apps.
@@ -17,6 +18,7 @@
 - [ ] Add local model integrity checks, partial download cleanup, retry, and clearer disk-size messaging.
 - [ ] Add history privacy controls: disable history, retention count, clear confirmation.
 - [ ] Add transcription cleanup behavior documentation and preview copy for local mode.
+- [x] Add local Notepad MVP with autosaved notes, markdown preview, and note-specific dictation insertion.
 - [ ] Add proper app metadata: author, copyright, bundle identifiers, icons, README production setup, license notes.
 - [ ] Add macOS signing/notarization workflow and Windows signing/MSI release workflow.
 - [ ] Add crash/log diagnostics suitable for support without exposing transcript/API key content.
@@ -25,6 +27,8 @@
 
 - [x] Refine desktop UI density and accessibility: focus states, keyboard navigation, reduced motion, contrast, text overflow, small-window behavior.
 - [x] Revamp frontend with custom light/dark Echo design system: persistent desktop sidebar, quiet native surfaces, compact settings forms, redesigned HUD, and reduced-motion-aware transitions.
+- [x] Apply macOS HIG polish pass: calmer SF Pro scale, top-leading dictation workspace, native grouped settings, durable HUD errors, and app menu commands.
+- [x] Add persistent Dynamic Island HUD with hover actions, live waveform recording, and no-target copy review.
 - [x] Remove MUI/Emotion and replace with lightweight custom components plus lucide icons.
 - [ ] Add bundle-size/code-splitting follow-up if startup performance regresses.
 - [ ] Improve tray/menu wording and lifecycle: open, start/stop, settings, quit.
@@ -36,7 +40,7 @@
 ## Manual QA Matrix
 
 - macOS first run: Groq setup, local setup, mic denied/regranted, Accessibility denied/regranted, shortcut conflict, paste fallback, hidden window, tray/menu bar, dock indicator.
-- Visual (custom Echo UI): light/dark themes, persistent desktop sidebar, quiet native surfaces, compact HUD, grouped history rows, compact settings controls, reduced-motion respected.
+- Visual (custom Echo UI): light/dark themes, persistent desktop sidebar, quiet native surfaces, Dynamic Island HUD states, grouped history rows, local Notepad editor, compact settings controls, reduced-motion respected.
 - macOS target apps: Notes, Safari, Chrome, Slack, Mail, Messages, VS Code, and browser text fields.
 - Windows first run: shortcut, recording, paste/copy fallback, history, settings, local model download/transcription, and installer launch.
 - Release checks: build production bundles on macOS and Windows and test on clean machines/accounts.
