@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     /// Returns the bundle identifier of the frontmost application (e.g. "com.apple.Notes").
@@ -39,6 +40,126 @@ mod macos {
             Err(format!("Failed to activate {bundle_id}: {err}"))
         }
     }
+
+    pub fn app_name(bundle_id: &str) -> Option<String> {
+        let script = format!(
+            "tell application \"System Events\" to get name of first application process whose bundle identifier is \"{}\"",
+            bundle_id
+        );
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn app_path(bundle_id: &str) -> Option<PathBuf> {
+        let script = format!("POSIX path of (path to application id \"{}\")", bundle_id);
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(path))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn icon_file_from_info_plist(app_path: &Path) -> Option<PathBuf> {
+        let info_plist = app_path.join("Contents/Info.plist");
+        let output = Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", "Print :CFBundleIconFile"])
+            .arg(&info_plist)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let mut icon_file = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if icon_file.is_empty() {
+            return None;
+        }
+        if !icon_file.ends_with(".icns") {
+            icon_file.push_str(".icns");
+        }
+
+        let icon_path = app_path.join("Contents/Resources").join(icon_file);
+        if icon_path.exists() {
+            Some(icon_path)
+        } else {
+            None
+        }
+    }
+
+    pub fn icon_data_url(bundle_id: &str) -> Option<String> {
+        let app_path = app_path(bundle_id)?;
+        let icon_path = icon_file_from_info_plist(&app_path)?;
+        let mut png_path = std::env::temp_dir();
+        png_path.push(format!(
+            "echo-target-icon-{}-{}.png",
+            std::process::id(),
+            bundle_id.replace('.', "-")
+        ));
+
+        let status = Command::new("sips")
+            .args(["-s", "format", "png", "--resampleHeightWidthMax", "64"])
+            .arg(&icon_path)
+            .arg("--out")
+            .arg(&png_path)
+            .status()
+            .ok()?;
+
+        if !status.success() {
+            let _ = std::fs::remove_file(&png_path);
+            return None;
+        }
+
+        let output = Command::new("base64").arg("-i").arg(&png_path).output().ok()?;
+        let _ = std::fs::remove_file(&png_path);
+        if !output.status.success() {
+            return None;
+        }
+
+        let encoded = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .collect::<String>();
+        if encoded.is_empty() {
+            None
+        } else {
+            Some(format!("data:image/png;base64,{encoded}"))
+        }
+    }
+}
+
+use serde::Serialize;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusTargetInfo {
+    pub bundle_id: Option<String>,
+    pub name: Option<String>,
+    pub icon_data_url: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -106,6 +227,30 @@ impl FocusTarget {
             }
         }
         FocusTarget::None
+    }
+
+    pub fn capture_with_info() -> (Self, Option<FocusTargetInfo>) {
+        let target = Self::capture();
+        let info = target.info();
+        (target, info)
+    }
+
+    pub fn info(&self) -> Option<FocusTargetInfo> {
+        match self {
+            #[cfg(target_os = "macos")]
+            FocusTarget::MacApp(bundle_id) => Some(FocusTargetInfo {
+                bundle_id: Some(bundle_id.clone()),
+                name: macos::app_name(bundle_id),
+                icon_data_url: macos::icon_data_url(bundle_id),
+            }),
+            #[cfg(target_os = "windows")]
+            FocusTarget::WinHwnd(_) => Some(FocusTargetInfo {
+                bundle_id: None,
+                name: None,
+                icon_data_url: None,
+            }),
+            FocusTarget::None => None,
+        }
     }
 
     /// Restores focus to the captured target.

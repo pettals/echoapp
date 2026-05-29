@@ -19,6 +19,21 @@ const MIN_ACTIVE_PEAK: f32 = 0.035;
 const NOISE_MULTIPLIER: f32 = 3.0;
 const LEVEL_RMS_GAIN: f32 = 9.0;
 const LEVEL_PEAK_GAIN: f32 = 1.4;
+const LIVE_CHUNK_SECS: f32 = 1.5;
+const LIVE_CHUNK_OVERLAP_SECS: f32 = 0.3;
+
+type SharedWavWriter = Arc<Mutex<Option<WavWriter<BufWriter<std::fs::File>>>>>;
+type SharedLiveChunker = Arc<Mutex<Option<LiveChunker>>>;
+
+#[derive(Clone, Debug)]
+pub struct LiveAudioChunk {
+    pub sequence: u64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub samples: Vec<i16>,
+}
+
+pub type LiveChunkSender = tokio::sync::mpsc::UnboundedSender<LiveAudioChunk>;
 
 pub struct SharedLevel(AtomicU32);
 
@@ -64,6 +79,7 @@ impl RecorderHandle {
         &mut self,
         device_name: Option<&str>,
         level: Arc<SharedLevel>,
+        live_chunk_sender: Option<LiveChunkSender>,
     ) -> Result<(), String> {
         if self.recording {
             return Err("Already recording".to_string());
@@ -74,7 +90,12 @@ impl RecorderHandle {
         let (result_tx, result_rx) = mpsc::channel::<Result<std::path::PathBuf, String>>();
 
         thread::spawn(move || {
-            let result = run_recording(cmd_rx, device_name_owned.as_deref(), level);
+            let result = run_recording(
+                cmd_rx,
+                device_name_owned.as_deref(),
+                level,
+                live_chunk_sender,
+            );
             let _ = result_tx.send(result);
         });
 
@@ -106,6 +127,54 @@ impl RecorderHandle {
 
     pub fn is_recording(&self) -> bool {
         self.recording
+    }
+}
+
+struct LiveChunker {
+    sender: LiveChunkSender,
+    sample_rate: u32,
+    channels: u16,
+    chunk_samples: usize,
+    overlap_samples: usize,
+    samples: Vec<i16>,
+    sequence: u64,
+}
+
+impl LiveChunker {
+    fn new(sender: LiveChunkSender, sample_rate: u32, channels: u16) -> Self {
+        let channel_count = channels.max(1) as usize;
+        let chunk_samples =
+            ((sample_rate as f32 * LIVE_CHUNK_SECS) as usize).max(1) * channel_count;
+        let overlap_samples =
+            ((sample_rate as f32 * LIVE_CHUNK_OVERLAP_SECS) as usize).max(1) * channel_count;
+
+        Self {
+            sender,
+            sample_rate,
+            channels,
+            chunk_samples,
+            overlap_samples: overlap_samples.min(chunk_samples.saturating_sub(channel_count)),
+            samples: Vec::with_capacity(chunk_samples),
+            sequence: 0,
+        }
+    }
+
+    fn push_samples(&mut self, next_samples: &[i16]) {
+        self.samples.extend_from_slice(next_samples);
+
+        while self.samples.len() >= self.chunk_samples {
+            let chunk = self.samples[..self.chunk_samples].to_vec();
+            self.sequence = self.sequence.saturating_add(1);
+            let _ = self.sender.send(LiveAudioChunk {
+                sequence: self.sequence,
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+                samples: chunk,
+            });
+
+            let drain_to = self.chunk_samples.saturating_sub(self.overlap_samples);
+            self.samples.drain(..drain_to);
+        }
     }
 }
 
@@ -345,10 +414,79 @@ fn mix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
+pub fn write_i16_wav_chunk(
+    samples: &[i16],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<std::path::PathBuf, String> {
+    let temp_file =
+        NamedTempFile::with_suffix(".wav").map_err(|e| format!("Temp file error: {e}"))?;
+    let temp_path = temp_file.path().to_path_buf();
+    let spec = WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let file = temp_file
+        .persist(&temp_path)
+        .map_err(|e| format!("Persist error: {e}"))?;
+    let mut writer =
+        WavWriter::new(BufWriter::new(file), spec).map_err(|e| format!("WAV error: {e}"))?;
+
+    for sample in samples {
+        writer
+            .write_sample(*sample)
+            .map_err(|e| format!("WAV write error: {e}"))?;
+    }
+
+    writer
+        .finalize()
+        .map_err(|e| format!("Finalize error: {e}"))?;
+    Ok(temp_path)
+}
+
+fn write_samples_and_level(
+    samples: &[i16],
+    writer: &SharedWavWriter,
+    live_chunker: &SharedLiveChunker,
+    level: &SharedLevel,
+) {
+    let mut peak: f32 = 0.0;
+    let mut sum_sq: f32 = 0.0;
+    let mut count: usize = 0;
+
+    if let Ok(mut guard) = writer.lock() {
+        if let Some(ref mut wav_writer) = *guard {
+            for &sample in samples {
+                let normalized = sample as f32 / i16::MAX as f32;
+                peak = peak.max(normalized.abs());
+                sum_sq += normalized * normalized;
+                count += 1;
+                let _ = wav_writer.write_sample(sample);
+            }
+        }
+    }
+
+    if let Ok(mut guard) = live_chunker.lock() {
+        if let Some(ref mut chunker) = *guard {
+            chunker.push_samples(samples);
+        }
+    }
+
+    let rms = if count > 0 {
+        (sum_sq / count as f32).sqrt()
+    } else {
+        0.0
+    };
+    level.store(visual_level(rms, peak));
+}
+
 fn run_recording(
     cmd_rx: mpsc::Receiver<Command>,
     device_name: Option<&str>,
     level: Arc<SharedLevel>,
+    live_chunk_sender: Option<LiveChunkSender>,
 ) -> Result<std::path::PathBuf, String> {
     let device = get_device(device_name)?;
 
@@ -378,6 +516,9 @@ fn run_recording(
         WavWriter::new(BufWriter::new(file), spec).map_err(|e| format!("WAV error: {e}"))?;
 
     let writer = Arc::new(Mutex::new(Some(wav_writer)));
+    let live_chunker = Arc::new(Mutex::new(
+        live_chunk_sender.map(|sender| LiveChunker::new(sender, sample_rate, channels)),
+    ));
 
     let err_fn = |err: cpal::StreamError| {
         eprintln!("Stream error: {err}");
@@ -388,32 +529,17 @@ fn run_recording(
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
             let writer_clone = Arc::clone(&writer);
+            let live_clone = Arc::clone(&live_chunker);
             let lvl = Arc::clone(&level);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mut peak: f32 = 0.0;
-                        let mut sum_sq: f32 = 0.0;
-                        let mut count: usize = 0;
-                        if let Ok(mut guard) = writer_clone.lock() {
-                            if let Some(ref mut w) = *guard {
-                                for &sample in data.iter() {
-                                    let normalized = sample.clamp(-1.0, 1.0);
-                                    peak = peak.max(normalized.abs());
-                                    sum_sq += normalized * normalized;
-                                    count += 1;
-                                    let s = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                                    let _ = w.write_sample(s);
-                                }
-                            }
-                        }
-                        let rms = if count > 0 {
-                            (sum_sq / count as f32).sqrt()
-                        } else {
-                            0.0
-                        };
-                        lvl.store(visual_level(rms, peak));
+                        let samples: Vec<i16> = data
+                            .iter()
+                            .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                            .collect();
+                        write_samples_and_level(&samples, &writer_clone, &live_clone, &lvl);
                     },
                     err_fn,
                     None,
@@ -422,31 +548,13 @@ fn run_recording(
         }
         cpal::SampleFormat::I16 => {
             let writer_clone = Arc::clone(&writer);
+            let live_clone = Arc::clone(&live_chunker);
             let lvl = Arc::clone(&level);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let mut peak: f32 = 0.0;
-                        let mut sum_sq: f32 = 0.0;
-                        let mut count: usize = 0;
-                        if let Ok(mut guard) = writer_clone.lock() {
-                            if let Some(ref mut w) = *guard {
-                                for &sample in data.iter() {
-                                    let normalized = sample as f32 / i16::MAX as f32;
-                                    peak = peak.max(normalized.abs());
-                                    sum_sq += normalized * normalized;
-                                    count += 1;
-                                    let _ = w.write_sample(sample);
-                                }
-                            }
-                        }
-                        let rms = if count > 0 {
-                            (sum_sq / count as f32).sqrt()
-                        } else {
-                            0.0
-                        };
-                        lvl.store(visual_level(rms, peak));
+                        write_samples_and_level(data, &writer_clone, &live_clone, &lvl);
                     },
                     err_fn,
                     None,
@@ -455,32 +563,20 @@ fn run_recording(
         }
         cpal::SampleFormat::U16 => {
             let writer_clone = Arc::clone(&writer);
+            let live_clone = Arc::clone(&live_chunker);
             let lvl = Arc::clone(&level);
             device
                 .build_input_stream(
                     &stream_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        let mut peak: f32 = 0.0;
-                        let mut sum_sq: f32 = 0.0;
-                        let mut count: usize = 0;
-                        if let Ok(mut guard) = writer_clone.lock() {
-                            if let Some(ref mut w) = *guard {
-                                for &sample in data.iter() {
-                                    let normalized = (sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
-                                    peak = peak.max(normalized.abs());
-                                    sum_sq += normalized * normalized;
-                                    count += 1;
-                                    let s = (normalized * i16::MAX as f32) as i16;
-                                    let _ = w.write_sample(s);
-                                }
-                            }
-                        }
-                        let rms = if count > 0 {
-                            (sum_sq / count as f32).sqrt()
-                        } else {
-                            0.0
-                        };
-                        lvl.store(visual_level(rms, peak));
+                        let samples: Vec<i16> = data
+                            .iter()
+                            .map(|sample| {
+                                let normalized = (*sample as f32 / u16::MAX as f32) * 2.0 - 1.0;
+                                (normalized * i16::MAX as f32) as i16
+                            })
+                            .collect();
+                        write_samples_and_level(&samples, &writer_clone, &live_clone, &lvl);
                     },
                     err_fn,
                     None,

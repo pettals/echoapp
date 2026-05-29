@@ -18,6 +18,9 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   padding: 16px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--success) 10%, transparent), transparent 150px),
+    var(--surface);
 }
 
 .settings-readiness-card strong,
@@ -51,6 +54,9 @@
   gap: 20px;
   align-items: start;
   padding: 16px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 48%),
+    var(--surface);
 }
 
 .settings-section__header {
@@ -79,6 +85,7 @@
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  box-shadow: 0 0 20px color-mix(in srgb, var(--accent) 11%, transparent);
 }
 
 .settings-section-icon svg,
@@ -122,10 +129,12 @@
   padding: 12px;
   color: var(--text);
   text-align: left;
-  background: var(--surface-muted);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 58%),
+    var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
   opacity: 1;
   cursor: pointer;
   transition:
@@ -171,7 +180,9 @@
 }
 
 .provider-card:hover {
-  background: var(--surface-hover);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+    var(--surface-hover);
   border-color: var(--border-strong);
 }
 
@@ -193,7 +204,9 @@
 
 .provider-card--groq.provider-card--active {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    0 0 24px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .provider-card--local {
@@ -207,14 +220,16 @@
 }
 
 .provider-card--local .provider-card-icon {
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  border-color: color-mix(in srgb, var(--success) 20%, var(--border));
 }
 
 .provider-card--local.provider-card--active {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
-  box-shadow: inset 3px 0 0 var(--accent);
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border));
+  box-shadow:
+    inset 3px 0 0 var(--success),
+    0 0 24px color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 .provider-card--active .provider-card__brandmark {
@@ -227,7 +242,9 @@
   display: grid;
   gap: 14px;
   padding: 16px;
-  background: var(--surface-muted);
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--info) 10%, transparent), transparent 150px),
+    var(--surface-muted);
 }
 
 .model-download-card__header {
@@ -286,7 +303,9 @@
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--surface-muted);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 58%),
+    var(--surface-muted);
 }
 
 .permission-card__icon {
@@ -345,9 +364,10 @@
   place-items: center;
   margin-top: 2px;
   border-radius: 999px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 22%, var(--border));
+  box-shadow: 0 0 20px color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 .permission-card--warning {
@@ -393,8 +413,8 @@
   margin-top: 4px;
   padding: 16px 0 0;
   background: linear-gradient(180deg, transparent, var(--content-bg) 46%, var(--content-bg));
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 @media (max-width: 900px) {

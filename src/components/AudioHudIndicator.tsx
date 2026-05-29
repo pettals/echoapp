@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent } from "react";
-import { Check, Copy, Mic, StickyNote } from "lucide-react";
+import { AppWindow, Check, Copy, Mic, StickyNote } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import "./AudioHudIndicator.css";
 
@@ -15,6 +15,9 @@ export interface AudioHudIndicatorProps {
   shortcutLabel?: string;
   notepadLabel?: string;
   copyText?: string;
+  liveTranscript?: string;
+  liveFinal?: boolean;
+  targetIconUrl?: string;
   copyCountdownMs?: number;
   onPrimaryAction?: () => void;
   onConfirm?: () => void;
@@ -51,6 +54,7 @@ const idleActionRevealDuration = idleAnimationDuration * 0.28;
 const idleActionRevealDelay = idleAnimationDuration - idleActionRevealDuration;
 
 type IdleAction = "mic" | "notepad";
+type LiveTier = "compact" | "short" | "medium" | "long";
 
 function stateLabel(state: AudioHudIndicatorState, completeLabel?: string): string {
   if (state === "complete") return completeLabel ?? "Complete";
@@ -59,6 +63,20 @@ function stateLabel(state: AudioHudIndicatorState, completeLabel?: string): stri
   if (state === "processing") return "Processing";
   if (state === "recording") return "Recording";
   return "Ready";
+}
+
+function liveTierForWords(wordCount: number): LiveTier {
+  if (wordCount === 0) return "compact";
+  if (wordCount <= 16) return "short";
+  if (wordCount <= 36) return "medium";
+  return "long";
+}
+
+function maxVisibleWordsForTier(tier: LiveTier): number {
+  if (tier === "short") return 24;
+  if (tier === "medium") return 46;
+  if (tier === "long") return 68;
+  return 0;
 }
 
 export default function AudioHudIndicator({
@@ -71,6 +89,9 @@ export default function AudioHudIndicator({
   shortcutLabel = "Command + D",
   notepadLabel = "Notepad",
   copyText = "",
+  liveTranscript = "",
+  liveFinal = false,
+  targetIconUrl,
   copyCountdownMs = 0,
   onPrimaryAction,
   onConfirm,
@@ -84,6 +105,15 @@ export default function AudioHudIndicator({
   const [activeAction, setActiveAction] = useState<IdleAction | null>(null);
   const countdownSeconds = Math.ceil(copyCountdownMs / 1000);
   const copyProgress = Math.max(0, Math.min(copyCountdownMs / 5000, 1));
+  const liveWords = liveTranscript.trim().split(/\s+/).filter(Boolean);
+  const hasLiveTranscript = liveWords.length > 0;
+  const liveTier = liveTierForWords(liveWords.length);
+  const maxVisibleWords = maxVisibleWordsForTier(liveTier);
+  const displayLiveWords =
+    hasLiveTranscript && liveWords.length > maxVisibleWords
+      ? liveWords.slice(-maxVisibleWords)
+      : liveWords;
+  const livePlaceholder = state === "processing" ? "Transcribing" : "Listening";
   const idleExpanded = state === "idle" && expanded;
   const visibleAction = idleExpanded ? activeAction : null;
   const islandVariant = state === "idle" ? (idleExpanded ? "idleExpanded" : "idleCollapsed") : state;
@@ -330,32 +360,73 @@ export default function AudioHudIndicator({
 
           {state === "recording" || state === "processing" ? (
             <motion.div
-              key="waveform"
-              className="audio-hud__waveform"
-              aria-hidden
+              key="live-transcript"
+              className={`audio-hud__live audio-hud__live--${liveTier}${liveFinal ? " audio-hud__live--final" : ""}`}
               initial={{ opacity: 0, y: reduceMotion ? 0 : 2, scale: reduceMotion ? 1 : 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: reduceMotion ? 0 : -2, scale: reduceMotion ? 1 : 0.96 }}
               transition={contentIn}
             >
-              {WAVEFORM_BARS.map((bar, index) => {
-                const responsiveLevel =
-                  state === "recording" ? 0.18 + clampedLevel * bar : 0.28 + bar * 0.34;
-                const height = Math.round(5 + Math.min(responsiveLevel, 1) * 22);
-                return (
-                  <span
-                    key={`${bar}-${index}`}
-                    className="audio-hud__bar"
-                    style={
-                      {
-                        "--bar-height": `${height}px`,
-                        "--bar-scale": `${0.68 + bar * 0.55}`,
-                        "--bar-delay": `${index * 32}ms`,
-                      } as CSSProperties
-                    }
-                  />
-                );
-              })}
+              <span className="audio-hud__target-icon" aria-hidden>
+                {targetIconUrl ? <img src={targetIconUrl} alt="" /> : <AppWindow size={17} strokeWidth={2.35} />}
+              </span>
+              <p className="audio-hud__live-text" aria-live="polite">
+                <AnimatePresence initial={false} mode="wait">
+                  {hasLiveTranscript ? (
+                    <motion.span
+                      key="transcript"
+                      className="audio-hud__live-transcript"
+                      initial={{ opacity: 0, y: reduceMotion ? 0 : 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: reduceMotion ? 0 : -3 }}
+                      transition={reduceMotion ? { duration: 0.01 } : { duration: 0.16, ease: emphasizedEase }}
+                    >
+                      {displayLiveWords.map((word, index) => (
+                        <motion.span
+                          key={`${word}-${index}`}
+                          className="audio-hud__live-word"
+                          initial={{ opacity: 0, y: reduceMotion ? 0 : 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={reduceMotion ? { duration: 0.01 } : { duration: 0.14, ease: emphasizedEase }}
+                        >
+                          {word}
+                        </motion.span>
+                      ))}
+                    </motion.span>
+                  ) : (
+                    <motion.span
+                      key="placeholder"
+                      className="audio-hud__live-placeholder"
+                      initial={{ opacity: 0, y: reduceMotion ? 0 : 3 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: reduceMotion ? 0 : -3 }}
+                      transition={reduceMotion ? { duration: 0.01 } : { duration: 0.14, ease: hudEase }}
+                    >
+                      {livePlaceholder}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </p>
+              <div className="audio-hud__waveform audio-hud__waveform--mini" aria-hidden>
+                {WAVEFORM_BARS.slice(0, 12).map((bar, index) => {
+                  const responsiveLevel =
+                    state === "recording" ? 0.18 + clampedLevel * bar : 0.28 + bar * 0.34;
+                  const height = Math.round(4 + Math.min(responsiveLevel, 1) * 14);
+                  return (
+                    <span
+                      key={`${bar}-${index}`}
+                      className="audio-hud__bar"
+                      style={
+                        {
+                          "--bar-height": `${height}px`,
+                          "--bar-scale": `${0.68 + bar * 0.55}`,
+                          "--bar-delay": `${index * 32}ms`,
+                        } as CSSProperties
+                      }
+                    />
+                  );
+                })}
+              </div>
             </motion.div>
           ) : null}
 

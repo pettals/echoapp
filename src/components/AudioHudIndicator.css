@@ -84,10 +84,18 @@
   overflow: visible;
 }
 
-.audio-hud--recording .audio-hud__island,
+.audio-hud--recording .audio-hud__island {
+  width: 420px;
+  height: 100%;
+  min-height: 52px;
+  border-radius: 26px;
+}
+
 .audio-hud--processing .audio-hud__island {
-  width: 176px;
-  height: 34px;
+  width: 420px;
+  height: 100%;
+  min-height: 52px;
+  border-radius: 26px;
 }
 
 .audio-hud--complete .audio-hud__island {
@@ -237,13 +245,195 @@
 }
 
 .audio-hud__waveform {
-  width: 150px;
+  width: 164px;
   height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
   color: rgba(255, 255, 255, 0.88);
+}
+
+.audio-hud__live {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  position: relative;
+  display: block;
+  padding: 13px 16px 48px;
+}
+
+.audio-hud__live--compact {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px 9px 12px;
+}
+
+.audio-hud__target-icon {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: rgba(255, 255, 255, 0.78);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.06)),
+    rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 15px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.audio-hud__live--compact .audio-hud__target-icon {
+  position: static;
+}
+
+.audio-hud__target-icon img {
+  width: 24px;
+  height: 24px;
+  display: block;
+  object-fit: contain;
+}
+
+.audio-hud__live-text {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.34;
+  text-align: left;
+  letter-spacing: 0;
+  overflow: hidden;
+}
+
+.audio-hud__live:not(.audio-hud__live--compact) .audio-hud__live-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  width: 100%;
+}
+
+.audio-hud__live--compact .audio-hud__live-text {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.audio-hud__live--short .audio-hud__live-text {
+  min-height: calc(12px * 1.34 * 2);
+  -webkit-line-clamp: 2;
+}
+
+.audio-hud__live--medium .audio-hud__live-text {
+  min-height: calc(12px * 1.34 * 3);
+  -webkit-line-clamp: 3;
+}
+
+.audio-hud__live--long .audio-hud__live-text {
+  min-height: calc(12px * 1.34 * 4);
+  -webkit-line-clamp: 4;
+}
+
+.audio-hud__live-transcript {
+  display: inline;
+}
+
+.audio-hud__live-word {
+  display: inline-block;
+  margin-right: 3px;
+  will-change: opacity, transform;
+}
+
+.audio-hud__live-placeholder {
+  color: rgba(255, 255, 255, 0.66);
+  font-weight: 720;
+}
+
+.audio-hud__live--final .audio-hud__live-text {
+  color: rgba(235, 255, 241, 0.98);
+}
+
+.audio-hud__waveform--mini {
+  position: absolute;
+  right: 13px;
+  bottom: 11px;
+  width: 66px;
+  height: 20px;
+  justify-content: flex-end;
+  gap: 2px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.audio-hud__live--compact .audio-hud__waveform--mini {
+  position: static;
+  width: 72px;
+  justify-content: flex-end;
+  align-self: center;
+}
+
+.audio-hud__waveform--mini .audio-hud__bar {
+  width: 2px;
+  flex-basis: 2px;
+  max-height: 18px;
+}
+
+.audio-hud--processing .audio-hud__waveform {
+  width: 150px;
+}
+
+.audio-hud--processing .audio-hud__waveform--mini {
+  width: 66px;
+}
+
+.audio-hud__stop-button {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--hud-red);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 120ms var(--hud-motion-ease),
+    transform 120ms var(--hud-motion-ease),
+    opacity 120ms var(--hud-motion-ease);
+}
+
+.audio-hud__stop-button span {
+  width: 10px;
+  height: 10px;
+  display: block;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+  box-shadow: 0 0 10px rgba(255, 59, 48, 0.22);
+}
+
+.audio-hud__stop-button:hover,
+.audio-hud__stop-button:focus-visible {
+  background: rgba(255, 59, 48, 0.14);
+  outline: none;
+  transform: scale(1.04);
+}
+
+.audio-hud__stop-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+  transform: none;
 }
 
 .audio-hud__bar {
@@ -406,6 +596,7 @@
   .audio-hud__bar,
   .audio-hud__action,
   .audio-hud__action-circle,
+  .audio-hud__stop-button,
   .audio-hud__copy-button {
     animation: none;
     transition-duration: 1ms;

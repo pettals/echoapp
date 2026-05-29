@@ -9,6 +9,7 @@ mod model_download;
 mod notepad;
 mod secure;
 mod setup;
+mod stats;
 mod whisper;
 
 #[cfg(target_os = "macos")]
@@ -22,7 +23,7 @@ use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectStat
 
 use audio::RecorderHandle;
 use config::{AppConfig, ConfigSaveError, ConfigSaveResult};
-use focus::FocusTarget;
+use focus::{FocusTarget, FocusTargetInfo};
 use groq::{GroqApiError, GroqReadiness};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -46,6 +47,8 @@ const INDICATOR_DOCK_CLEARANCE: f64 = 12.0;
 struct AppState {
     recorder: Mutex<RecorderHandle>,
     focus_target: Mutex<FocusTarget>,
+    focus_target_info: Mutex<Option<FocusTargetInfo>>,
+    live_transcription_session: Mutex<Option<LiveTranscriptionSession>>,
     recording_level: Arc<audio::SharedLevel>,
     recording_active: Arc<AtomicBool>,
     download_state: Arc<model_download::DownloadState>,
@@ -58,6 +61,10 @@ struct AppState {
 
 unsafe impl Send for AppState {}
 unsafe impl Sync for AppState {}
+
+struct LiveTranscriptionSession {
+    cancel: Arc<AtomicBool>,
+}
 
 fn place_indicator_in_work_area(
     indicator: &tauri::WebviewWindow,
@@ -88,17 +95,44 @@ fn is_indicator_compact_size(width: f64, height: f64) -> bool {
         && (height - INDICATOR_COMPACT_HEIGHT).abs() < 0.5
 }
 
+fn emit_indicator_target(app: &tauri::AppHandle, info: Option<&FocusTargetInfo>) {
+    let _ = app.emit(
+        "indicator-target",
+        IndicatorTargetPayload {
+            target_icon_url: info.and_then(|target| target.icon_data_url.clone()),
+        },
+    );
+}
+
+fn capture_focus_target(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    external_only: bool,
+) -> Result<(), String> {
+    let (target, info) = FocusTarget::capture_with_info();
+    if external_only && target.is_self_app() {
+        emit_indicator_target(app, None);
+        return Ok(());
+    }
+
+    *state
+        .focus_target
+        .lock()
+        .map_err(|e| format!("Lock error: {e}"))? = target;
+    *state
+        .focus_target_info
+        .lock()
+        .map_err(|e| format!("Lock error: {e}"))? = info.clone();
+    emit_indicator_target(app, info.as_ref());
+    Ok(())
+}
+
 fn show_indicator_window(app: &tauri::AppHandle, capture_target: bool) {
     if capture_target {
         // Capture the frontmost app NOW, before showing the indicator, so that
         // a later HUD-click can paste back into the correct target.
         if let Some(state) = app.try_state::<AppState>() {
-            let target = FocusTarget::capture();
-            if !target.is_self_app() {
-                if let Ok(mut ft) = state.focus_target.lock() {
-                    *ft = target;
-                }
-            }
+            let _ = capture_focus_target(app, &state, true);
         }
     }
 
@@ -135,6 +169,20 @@ fn show_indicator_window(app: &tauri::AppHandle, capture_target: bool) {
 #[derive(Clone, Copy, Serialize)]
 struct IndicatorHoverPayload {
     expanded: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndicatorTargetPayload {
+    target_icon_url: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndicatorLiveTranscriptPayload {
+    transcript: String,
+    target_icon_url: Option<String>,
+    is_final: bool,
 }
 
 fn set_indicator_hover_state(app: &tauri::AppHandle, expanded: bool) {
@@ -220,31 +268,181 @@ fn ensure_indicator_visible(app: &tauri::AppHandle) {
     show_indicator_window(app, true);
 }
 
-fn capture_external_focus_target(state: &AppState) -> Result<(), String> {
-    let target = FocusTarget::capture();
-    if !target.is_self_app() {
-        *state
-            .focus_target
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))? = target;
-    }
-    Ok(())
+fn capture_external_focus_target(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    capture_focus_target(app, state, true)
 }
 
-fn start_recorder(state: &AppState) -> Result<(), String> {
+fn cancel_live_transcription(state: &AppState) {
+    if let Ok(mut session) = state.live_transcription_session.lock() {
+        if let Some(session) = session.take() {
+            session.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+fn target_icon_url(state: &AppState) -> Option<String> {
+    state
+        .focus_target_info
+        .lock()
+        .ok()
+        .and_then(|info| info.as_ref().and_then(|target| target.icon_data_url.clone()))
+}
+
+fn start_live_transcription_session(
+    app: tauri::AppHandle,
+    state: &AppState,
+    cfg: &AppConfig,
+) -> Option<audio::LiveChunkSender> {
+    if cfg.model_provider != "api" || cfg.groq_api_key.trim().is_empty() {
+        return None;
+    }
+
+    cancel_live_transcription(state);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<audio::LiveAudioChunk>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let api_key = cfg.groq_api_key.clone();
+    let model = cfg.transcription_model.clone();
+    let target_icon_url = target_icon_url(state);
+
+    tauri::async_runtime::spawn(async move {
+        let mut transcript = String::new();
+
+        while let Some(chunk) = rx.recv().await {
+            if worker_cancel.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let chunk_path_result = tokio::task::spawn_blocking(move || {
+                audio::write_i16_wav_chunk(&chunk.samples, chunk.sample_rate, chunk.channels)
+            })
+            .await;
+
+            let chunk_path = match chunk_path_result {
+                Ok(Ok(path)) => path,
+                Ok(Err(e)) => {
+                    eprintln!("Live transcript chunk write failed: {e}");
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("Live transcript chunk task failed: {e}");
+                    continue;
+                }
+            };
+
+            let has_speech_path = chunk_path.clone();
+            let has_speech = tokio::task::spawn_blocking(move || audio::has_speech(&has_speech_path))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false);
+
+            if !has_speech {
+                let _ = tokio::fs::remove_file(&chunk_path).await;
+                continue;
+            }
+
+            let chunk_text = match groq::transcribe(&api_key, &chunk_path, &model).await {
+                Ok(text) => text,
+                Err(e) => {
+                    eprintln!("Live transcript chunk {} failed: {}", chunk.sequence, e.message);
+                    let _ = tokio::fs::remove_file(&chunk_path).await;
+                    continue;
+                }
+            };
+            let _ = tokio::fs::remove_file(&chunk_path).await;
+
+            if worker_cancel.load(Ordering::SeqCst) {
+                break;
+            }
+
+            transcript = merge_partial_transcript(&transcript, &chunk_text);
+            if !transcript.trim().is_empty() {
+                let _ = app.emit(
+                    "indicator-live-transcript",
+                    IndicatorLiveTranscriptPayload {
+                        transcript: transcript.clone(),
+                        target_icon_url: target_icon_url.clone(),
+                        is_final: false,
+                    },
+                );
+            }
+        }
+    });
+
+    if let Ok(mut session) = state.live_transcription_session.lock() {
+        *session = Some(LiveTranscriptionSession { cancel });
+    }
+
+    Some(tx)
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn merge_partial_transcript(current: &str, next: &str) -> String {
+    let current = current.trim();
+    let next = next.trim();
+    if current.is_empty() {
+        return next.to_string();
+    }
+    if next.is_empty() || current.contains(next) {
+        return current.to_string();
+    }
+    if next.starts_with(current) {
+        return next.to_string();
+    }
+
+    let next_words: Vec<&str> = next.split_whitespace().collect();
+    let normalized_current = normalized_words(current);
+    let normalized_next = normalized_words(next);
+    let max_overlap = normalized_current
+        .len()
+        .min(normalized_next.len())
+        .min(14);
+
+    for overlap in (1..=max_overlap).rev() {
+        if normalized_current[normalized_current.len() - overlap..]
+            == normalized_next[..overlap]
+        {
+            let suffix = next_words[overlap..].join(" ");
+            if suffix.is_empty() {
+                return current.to_string();
+            }
+            return format!("{current} {suffix}");
+        }
+    }
+
+    format!("{current} {next}")
+}
+
+fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), String> {
     if state.recording_active.load(Ordering::SeqCst) {
         return Ok(());
     }
 
     let cfg = AppConfig::load();
+    let live_chunk_sender = start_live_transcription_session(app.clone(), state, &cfg);
     let mut recorder = state
         .recorder
         .lock()
         .map_err(|e| format!("Lock error: {e}"))?;
-    recorder.start(
+    if let Err(e) = recorder.start(
         cfg.input_device.as_deref(),
         Arc::clone(&state.recording_level),
-    )?;
+        live_chunk_sender,
+    ) {
+        cancel_live_transcription(state);
+        return Err(e);
+    }
     state.recording_active.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -564,18 +762,13 @@ fn get_screen_size(app: tauri::AppHandle) -> Result<ScreenSize, String> {
 }
 
 #[tauri::command]
-fn capture_focus(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let target = FocusTarget::capture();
-    *state
-        .focus_target
-        .lock()
-        .map_err(|e| format!("Lock error: {e}"))? = target;
-    Ok(())
+fn capture_focus(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    capture_focus_target(&app, &state, false)
 }
 
 #[tauri::command]
 fn start_recording(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
-    start_recorder(&state)?;
+    start_recorder(&state, &app)?;
     ensure_indicator_visible(&app);
     Ok(())
 }
@@ -585,8 +778,8 @@ fn start_recording_from_indicator(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    capture_external_focus_target(&state)?;
-    start_recorder(&state)?;
+    capture_external_focus_target(&app, &state)?;
+    start_recorder(&state, &app)?;
     let _ = media::pause_media();
     let _ = app.emit("indicator-mode", "recording");
     Ok(())
@@ -595,6 +788,7 @@ fn start_recording_from_indicator(
 #[tauri::command]
 fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, String> {
     state.recording_active.store(false, Ordering::SeqCst);
+    cancel_live_transcription(&state);
     let mut recorder = state
         .recorder
         .lock()
@@ -869,6 +1063,20 @@ fn clear_transcript_history() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_dictation_stats(local_date: String) -> Result<stats::DictationStats, String> {
+    stats::view(&local_date)
+}
+
+#[tauri::command]
+fn record_dictation_stats(
+    word_count: u64,
+    duration_ms: u64,
+    local_date: String,
+) -> Result<stats::DictationStatsUpdate, String> {
+    stats::record(word_count, duration_ms, &local_date)
+}
+
+#[tauri::command]
 fn list_notepad_notes() -> Vec<notepad::NotepadNote> {
     notepad::load_all()
 }
@@ -925,6 +1133,8 @@ pub fn run() {
         .manage(AppState {
             recorder: Mutex::new(RecorderHandle::new()),
             focus_target: Mutex::new(FocusTarget::None),
+            focus_target_info: Mutex::new(None),
+            live_transcription_session: Mutex::new(None),
             recording_level: Arc::new(audio::SharedLevel::new()),
             recording_active: Arc::new(AtomicBool::new(false)),
             download_state: Arc::new(model_download::DownloadState::new()),
@@ -1188,6 +1398,8 @@ pub fn run() {
             copy_transcript,
             delete_transcript_history,
             clear_transcript_history,
+            get_dictation_stats,
+            record_dictation_stats,
             list_notepad_notes,
             create_notepad_note,
             update_notepad_note,

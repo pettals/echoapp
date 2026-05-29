@@ -691,9 +691,9 @@ export default function Settings({
             onPreviewAppearance?.(appearance_theme);
           }}
           options={[
-            { icon: <Monitor size={15} />, label: "System", value: "system" },
-            { icon: <Sun size={15} />, label: "Light", value: "light" },
             { icon: <Moon size={15} />, label: "Dark", value: "dark" },
+            { icon: <Sun size={15} />, label: "Light", value: "light" },
+            { icon: <Monitor size={15} />, label: "System", value: "system" },
           ]}
         />
       </SettingsSection>

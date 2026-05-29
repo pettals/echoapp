@@ -7,8 +7,11 @@ import {
   CircleDot,
   Copy,
   FileText,
+  Flame,
+  Gauge,
   History,
   Mic,
+  PartyPopper,
   Pencil,
   Plus,
   RefreshCw,
@@ -16,7 +19,10 @@ import {
   Settings as SettingsIcon,
   Sparkles,
   Square,
+  Target,
   Trash2,
+  Trophy,
+  X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
@@ -34,6 +40,7 @@ import "./App.css";
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
 type ActiveTab = "dictate" | "notepad" | "history" | "settings";
 type DesktopPlatform = "macos" | "windows";
+type DictationTarget = "external" | "standalone-notepad";
 type IndicatorMode =
   | "idle"
   | "recording"
@@ -45,6 +52,14 @@ type IndicatorMode =
 interface IndicatorPayload {
   mode: IndicatorMode;
   transcript?: string;
+}
+interface IndicatorLiveTranscriptPayload {
+  transcript: string;
+  targetIconUrl?: string;
+  isFinal?: boolean;
+}
+interface IndicatorTargetPayload {
+  targetIconUrl?: string;
 }
 interface IndicatorHoverPayload {
   expanded: boolean;
@@ -86,6 +101,25 @@ interface HistoryItem {
   paste_result: string;
 }
 
+interface DictationStats {
+  total_words: number;
+  dictation_count: number;
+  rolling_wpm: number;
+  day_streak: number;
+  next_milestone: number | null;
+  next_milestone_progress: number;
+}
+
+interface DictationStatsUpdate {
+  stats: DictationStats;
+  crossed_milestones: number[];
+}
+
+interface MilestoneCelebration {
+  id: number;
+  milestone: number;
+}
+
 interface NotepadNote {
   id: string;
   body: string;
@@ -121,9 +155,15 @@ const WINDOW_LABEL = (() => {
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const NO_SPEECH_DETECTED = "NO_SPEECH_DETECTED";
+const WORD_MILESTONES = [100, 1_000, 2_000, 5_000, 7_500, 10_000, 20_000, 50_000, 100_000];
 const INDICATOR_COMPACT_SIZE = { width: 56, height: 14 };
 const INDICATOR_HOVER_SIZE = { width: 264, height: 74 };
-const INDICATOR_RECORDING_SIZE = { width: 176, height: 34 };
+const INDICATOR_RECORDING_SIZES = {
+  compact: { width: 420, height: 52 },
+  short: { width: 420, height: 86 },
+  medium: { width: 420, height: 110 },
+  long: { width: 420, height: 132 },
+};
 const INDICATOR_COMPLETE_SIZE = { width: 132, height: 34 };
 const INDICATOR_COPY_REVIEW_SIZE = { width: 420, height: 92 };
 const INDICATOR_ERROR_SIZE = { width: 240, height: 72 };
@@ -180,6 +220,15 @@ const MOCK_SETUP_STATUS: SetupStatus = {
       action_label: "Open Accessibility",
     },
   ],
+};
+
+const MOCK_STATS: DictationStats = {
+  total_words: 230,
+  dictation_count: 7,
+  rolling_wpm: 69,
+  day_streak: 2,
+  next_milestone: 1_000,
+  next_milestone_progress: 0.23,
 };
 
 const MOCK_HISTORY: HistoryItem[] = [
@@ -256,6 +305,11 @@ async function emitIndicatorMode(mode: IndicatorMode, transcript?: string) {
   await emit("indicator-mode", { mode, transcript });
 }
 
+async function emitIndicatorLiveTranscript(transcript: string, isFinal = false) {
+  if (!HAS_TAURI) return;
+  await emit("indicator-live-transcript", { transcript, isFinal });
+}
+
 function useResolvedTheme(theme: AppearanceTheme): "light" | "dark" {
   const [systemTheme, setSystemTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined" || !window.matchMedia) return "light";
@@ -275,7 +329,27 @@ function useResolvedTheme(theme: AppearanceTheme): "light" | "dark" {
 }
 
 function normalizeTheme(value: string | undefined): AppearanceTheme {
-  return value === "light" || value === "dark" || value === "system" ? value : "system";
+  return value === "light" || value === "dark" || value === "system" ? value : "dark";
+}
+
+function getLocalDateKey(date = new Date()): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 10);
+}
+
+function countDictationWords(text: string): number {
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word.length > 0 && /[\p{L}\p{N}]/u.test(word)).length;
+}
+
+function formatInsightNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatMilestone(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
 
 function useRecordingLevel(active: boolean): number {
@@ -352,9 +426,19 @@ function mapIndicatorToHudState(mode: IndicatorMode): AudioHudIndicatorState {
   return mode;
 }
 
-function indicatorSizeForMode(mode: IndicatorMode, expanded: boolean) {
+function liveTranscriptTier(transcript = ""): keyof typeof INDICATOR_RECORDING_SIZES {
+  const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
+  if (wordCount === 0) return "compact";
+  if (wordCount <= 16) return "short";
+  if (wordCount <= 36) return "medium";
+  return "long";
+}
+
+function indicatorSizeForMode(mode: IndicatorMode, expanded: boolean, liveTranscript = "") {
   if (mode === "idle") return expanded ? INDICATOR_HOVER_SIZE : INDICATOR_COMPACT_SIZE;
-  if (mode === "recording" || mode === "processing") return INDICATOR_RECORDING_SIZE;
+  if (mode === "recording" || mode === "processing") {
+    return INDICATOR_RECORDING_SIZES[liveTranscriptTier(liveTranscript)];
+  }
   if (mode === "copied_no_target") return INDICATOR_COPY_REVIEW_SIZE;
   if (mode === "error") return INDICATOR_ERROR_SIZE;
   return INDICATOR_COMPLETE_SIZE;
@@ -414,6 +498,9 @@ function DockIndicator() {
   const [appearanceTheme, setAppearanceTheme] = useState<AppearanceTheme>("dark");
   const [shortcutLabel, setShortcutLabel] = useState(MOCK_CONFIG.shortcut);
   const [copyText, setCopyText] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [liveTranscriptFinal, setLiveTranscriptFinal] = useState(false);
+  const [targetIconUrl, setTargetIconUrl] = useState<string | undefined>();
   const [copyCountdownMs, setCopyCountdownMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const prevRecording = useRef(false);
@@ -448,7 +535,7 @@ function DockIndicator() {
     if (!HAS_TAURI) return;
 
     let cancelled = false;
-    const targetSize = indicatorSizeForMode(mode, expanded);
+    const targetSize = indicatorSizeForMode(mode, expanded, liveTranscript);
 
     const resizeIndicator = async () => {
       try {
@@ -475,7 +562,7 @@ function DockIndicator() {
         clearInterval(dockPoll);
       }
     };
-  }, [mode, expanded, platform]);
+  }, [mode, expanded, liveTranscript, platform]);
 
   useEffect(() => {
     if (!HAS_TAURI) return;
@@ -561,12 +648,22 @@ function DockIndicator() {
     let unlistenTheme: (() => void) | null = null;
     let unlistenShortcut: (() => void) | null = null;
     let unlistenHover: (() => void) | null = null;
+    let unlistenLiveTranscript: (() => void) | null = null;
+    let unlistenTarget: (() => void) | null = null;
 
     listen<IndicatorPayload | IndicatorMode>("indicator-mode", (event) => {
       const payload = event.payload;
       const nextMode = typeof payload === "string" ? payload : payload.mode;
       setMode(nextMode);
       setCopyText(typeof payload === "string" ? "" : payload.transcript ?? "");
+      if (nextMode === "recording") {
+        setLiveTranscript("");
+        setLiveTranscriptFinal(false);
+      }
+      if (nextMode === "idle" || nextMode === "copied_no_target" || nextMode === "error") {
+        setLiveTranscript("");
+        setLiveTranscriptFinal(false);
+      }
     }).then((u) => {
       unlistenMode = u;
     });
@@ -591,11 +688,29 @@ function DockIndicator() {
       unlistenHover = u;
     });
 
+    listen<IndicatorLiveTranscriptPayload>("indicator-live-transcript", (event) => {
+      setLiveTranscript(event.payload.transcript ?? "");
+      setLiveTranscriptFinal(Boolean(event.payload.isFinal));
+      if (event.payload.targetIconUrl) {
+        setTargetIconUrl(event.payload.targetIconUrl);
+      }
+    }).then((u) => {
+      unlistenLiveTranscript = u;
+    });
+
+    listen<IndicatorTargetPayload>("indicator-target", (event) => {
+      setTargetIconUrl(event.payload.targetIconUrl);
+    }).then((u) => {
+      unlistenTarget = u;
+    });
+
     return () => {
       unlistenMode?.();
       unlistenTheme?.();
       unlistenShortcut?.();
       unlistenHover?.();
+      unlistenLiveTranscript?.();
+      unlistenTarget?.();
     };
   }, [platform]);
 
@@ -749,6 +864,9 @@ function DockIndicator() {
         shortcutLabel={shortcutLabel}
         notepadLabel="Notepad"
         copyText={mode === "copied_no_target" ? copyText : ""}
+        liveTranscript={liveTranscript}
+        liveFinal={liveTranscriptFinal}
+        targetIconUrl={targetIconUrl}
         copyCountdownMs={copyCountdownMs}
         onPrimaryAction={mode === "idle" ? handleStartRecording : undefined}
         onConfirm={handleConfirm}
@@ -771,6 +889,8 @@ function MainApp() {
   const [errorMsg, setErrorMsg] = useState("");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [stats, setStats] = useState<DictationStats>(MOCK_STATS);
+  const [milestoneCelebration, setMilestoneCelebration] = useState<MilestoneCelebration | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [shortcutError, setShortcutError] = useState("");
@@ -783,6 +903,10 @@ function MainApp() {
   const stopRequestedRef = useRef(false);
   const stopInFlightRef = useRef(false);
   const sessionActiveRef = useRef(false);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const notepadFocusedRef = useRef(false);
+  const dictationTargetRef = useRef<DictationTarget>("external");
+  const milestoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shortcutPressedRef = useRef<() => void>(() => {});
   const shortcutReleasedRef = useRef<() => void>(() => {});
   const resolvedTheme = useResolvedTheme(appearancePreview ?? config?.appearance_theme ?? "dark");
@@ -876,6 +1000,48 @@ function MainApp() {
     }
   }, []);
 
+  const loadStats = useCallback(async () => {
+    if (!HAS_TAURI) {
+      setStats(MOCK_STATS);
+      return MOCK_STATS;
+    }
+
+    try {
+      const nextStats = await invoke<DictationStats>("get_dictation_stats", {
+        localDate: getLocalDateKey(),
+      });
+      setStats(nextStats);
+      return nextStats;
+    } catch (e) {
+      console.error("Failed to load dictation stats:", e);
+      setStats(MOCK_STATS);
+      return MOCK_STATS;
+    }
+  }, []);
+
+  const showMilestoneCelebration = useCallback((milestone: number) => {
+    setMilestoneCelebration({ id: Date.now(), milestone });
+    if (milestoneTimerRef.current) {
+      clearTimeout(milestoneTimerRef.current);
+    }
+    milestoneTimerRef.current = setTimeout(() => {
+      setMilestoneCelebration(null);
+      milestoneTimerRef.current = null;
+    }, 5200);
+  }, []);
+
+  const dismissMilestoneCelebration = useCallback(() => {
+    if (milestoneTimerRef.current) {
+      clearTimeout(milestoneTimerRef.current);
+      milestoneTimerRef.current = null;
+    }
+    setMilestoneCelebration(null);
+  }, []);
+
+  const resetDictationTarget = useCallback(() => {
+    dictationTargetRef.current = "external";
+  }, []);
+
   const startRecording = useCallback(
     async (captureFocus = true): Promise<boolean> => {
       if (startInFlightRef.current) return false;
@@ -886,6 +1052,8 @@ function MainApp() {
           setAppState("recording");
           setTranscript("");
           setErrorMsg("");
+          dictationTargetRef.current = "external";
+          recordingStartedAtRef.current = Date.now();
           setTimeout(() => setAppState("idle"), 1800);
           return true;
         }
@@ -899,7 +1067,11 @@ function MainApp() {
           return false;
         }
 
-        if (captureFocus) {
+        const target: DictationTarget =
+          captureFocus && notepadFocusedRef.current ? "standalone-notepad" : "external";
+        dictationTargetRef.current = target;
+
+        if (captureFocus && target === "external") {
           await invoke("capture_focus");
         }
         await invoke("start_recording");
@@ -909,9 +1081,11 @@ function MainApp() {
         setAppState("recording");
         setTranscript("");
         setErrorMsg("");
+        recordingStartedAtRef.current = Date.now();
         return true;
       } catch (e: unknown) {
         const msg = formatErrorMessage(e);
+        resetDictationTarget();
         setErrorMsg(msg);
         setAppState("error");
         return false;
@@ -919,7 +1093,7 @@ function MainApp() {
         startInFlightRef.current = false;
       }
     },
-    [setIndicatorMode]
+    [resetDictationTarget, setIndicatorMode]
   );
 
   const stopAndPaste = useCallback(async (): Promise<boolean> => {
@@ -930,6 +1104,7 @@ function MainApp() {
       const recording = await invoke<boolean>("is_recording");
       if (!recording) {
         stopRequestedRef.current = false;
+        resetDictationTarget();
         return false;
       }
 
@@ -937,6 +1112,11 @@ function MainApp() {
       setAppState("processing");
       setIndicatorMode("processing");
       const audioPath = await invoke<string>("stop_recording");
+      const recordingDurationMs = Math.max(
+        0,
+        Date.now() - (recordingStartedAtRef.current ?? Date.now())
+      );
+      recordingStartedAtRef.current = null;
 
       const rawText = await invoke<string>("transcribe_audio", { audioPath });
 
@@ -952,8 +1132,13 @@ function MainApp() {
         }
       }
 
+      await emitIndicatorLiveTranscript(finalText, true);
       setTranscript(finalText);
-      const result = await invoke<string>("paste_transcript", { text: finalText });
+      const activeTarget = dictationTargetRef.current;
+      const result =
+        activeTarget === "standalone-notepad"
+          ? await emit("notepad-insert-transcript", finalText).then(() => "pasted")
+          : await invoke<string>("paste_transcript", { text: finalText });
       const pasteWarning =
         result === "copied_accessibility"
           ? "Copied because Echo is not enabled in Accessibility."
@@ -971,6 +1156,7 @@ function MainApp() {
         setIndicatorMode("copied");
       }
       playChime();
+      resetDictationTarget();
 
       try {
         const item = await invoke<HistoryItem>("add_transcript_history", {
@@ -982,11 +1168,32 @@ function MainApp() {
         console.error("Failed to save history:", e);
       }
 
+      try {
+        const wordCount = countDictationWords(finalText);
+        if (wordCount > 0) {
+          const update = await invoke<DictationStatsUpdate>("record_dictation_stats", {
+            wordCount,
+            durationMs: recordingDurationMs,
+            localDate: getLocalDateKey(),
+          });
+          setStats(update.stats);
+          const latestMilestone =
+            update.crossed_milestones[update.crossed_milestones.length - 1];
+          if (latestMilestone) {
+            showMilestoneCelebration(latestMilestone);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to update dictation stats:", e);
+      }
+
       setTimeout(() => setAppState("idle"), 3000);
       return true;
     } catch (e: unknown) {
       const msg = formatErrorMessage(e);
       if (msg === NO_SPEECH_DETECTED) {
+        recordingStartedAtRef.current = null;
+        resetDictationTarget();
         setTranscript("");
         setErrorMsg("");
         setAppState("idle");
@@ -997,12 +1204,14 @@ function MainApp() {
       setErrorMsg(msg);
       setAppState("error");
       setIndicatorMode("error");
+      recordingStartedAtRef.current = null;
+      resetDictationTarget();
       return false;
     } finally {
       invoke("resume_media").catch(() => {});
       stopInFlightRef.current = false;
     }
-  }, [playChime, setIndicatorMode]);
+  }, [playChime, resetDictationTarget, setIndicatorMode, showMilestoneCelebration]);
 
   const handleStartRecording = useCallback(async () => {
     stopRequestedRef.current = false;
@@ -1019,6 +1228,8 @@ function MainApp() {
     stopRequestedRef.current = false;
     shortcutHeldRef.current = false;
     sessionActiveRef.current = false;
+    recordingStartedAtRef.current = null;
+    resetDictationTarget();
 
     try {
       if (HAS_TAURI) {
@@ -1038,7 +1249,7 @@ function MainApp() {
       setAppState("idle");
       setIndicatorMode("idle");
     }
-  }, [setIndicatorMode]);
+  }, [resetDictationTarget, setIndicatorMode]);
 
   const handleShortcutPressed = useCallback(async () => {
     if (shortcutHeldRef.current || sessionActiveRef.current) return;
@@ -1131,12 +1342,17 @@ function MainApp() {
     });
     loadSetupStatus();
     loadHistory();
+    loadStats();
     return () => {
       if (registeredShortcut.current) {
         unregister(registeredShortcut.current).catch(console.error);
       }
+      if (milestoneTimerRef.current) {
+        clearTimeout(milestoneTimerRef.current);
+        milestoneTimerRef.current = null;
+      }
     };
-  }, [loadConfig, loadHistory, loadSetupStatus, registerShortcut]);
+  }, [loadConfig, loadHistory, loadSetupStatus, loadStats, registerShortcut]);
 
   useEffect(() => {
     contentMainColRef.current?.scrollTo({ top: 0, behavior: "auto" });
@@ -1179,6 +1395,10 @@ function MainApp() {
 
     listen("indicator-cancel-recording", () => {
       void handleCancelRecording();
+    }).then((u) => unlisten.push(u));
+
+    listen<boolean>("notepad-window-focus", (event) => {
+      notepadFocusedRef.current = event.payload;
     }).then((u) => unlisten.push(u));
 
     return () => {
@@ -1366,8 +1586,11 @@ function MainApp() {
                     errorMsg={errorMsg}
                     setupStatus={setupStatus}
                     shortcutError={shortcutError}
+                    stats={stats}
                     transcript={transcript}
+                    milestoneCelebration={milestoneCelebration}
                     onAction={handleSetupAction}
+                    onDismissMilestone={dismissMilestoneCelebration}
                     onOpenSettings={() => setActiveTab("settings")}
                     onRefresh={loadSetupStatus}
                     onStartRecording={handleStartRecording}
@@ -1430,14 +1653,85 @@ function NavButton({
   );
 }
 
+function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
+  const nextMilestone = stats.next_milestone;
+  const progress = Math.round(Math.min(Math.max(stats.next_milestone_progress, 0), 1) * 100);
+  const remaining = nextMilestone ? Math.max(nextMilestone - stats.total_words, 0) : 0;
+  const finalMilestone = WORD_MILESTONES[WORD_MILESTONES.length - 1];
+
+  return (
+    <section className="stats-bento" aria-label="Dictation insights">
+      <article className="stats-tile stats-tile--total">
+        <span className="stats-tile__icon" aria-hidden>
+          <Trophy size={16} />
+        </span>
+        <div>
+          <span>Total words</span>
+          <strong>{formatInsightNumber(stats.total_words)}</strong>
+        </div>
+      </article>
+
+      <article className="stats-tile">
+        <span className="stats-tile__icon" aria-hidden>
+          <Gauge size={16} />
+        </span>
+        <div>
+          <span>WPM</span>
+          <strong>{formatInsightNumber(stats.rolling_wpm)}</strong>
+        </div>
+      </article>
+
+      <article className="stats-tile">
+        <span className="stats-tile__icon" aria-hidden>
+          <Flame size={16} />
+        </span>
+        <div>
+          <span>Day streak</span>
+          <strong>{formatInsightNumber(stats.day_streak)}</strong>
+        </div>
+      </article>
+
+      <article className="stats-tile stats-tile--progress">
+        <div className="stats-tile__progress-head">
+          <span className="stats-tile__icon" aria-hidden>
+            <Target size={16} />
+          </span>
+          <div>
+            <span>Next milestone</span>
+            <strong>{nextMilestone ? `${progress}%` : "Complete"}</strong>
+          </div>
+        </div>
+        <div
+          className="stats-progress"
+          aria-label={
+            nextMilestone
+              ? `${progress}% toward ${formatMilestone(nextMilestone)} words`
+              : `${formatMilestone(finalMilestone)} word milestone complete`
+          }
+        >
+          <span style={{ width: `${nextMilestone ? progress : 100}%` }} />
+        </div>
+        <p>
+          {nextMilestone
+            ? `${formatMilestone(remaining)} words to ${formatMilestone(nextMilestone)}`
+            : `${formatMilestone(finalMilestone)} word milestone reached`}
+        </p>
+      </article>
+    </section>
+  );
+}
+
 function DictatePanel({
   appState,
   config,
   errorMsg,
   setupStatus,
   shortcutError,
+  stats,
   transcript,
+  milestoneCelebration,
   onAction,
+  onDismissMilestone,
   onOpenSettings,
   onRefresh,
   onStartRecording,
@@ -1447,8 +1741,11 @@ function DictatePanel({
   errorMsg: string;
   setupStatus: SetupStatus | null;
   shortcutError: string;
+  stats: DictationStats;
   transcript: string;
+  milestoneCelebration: MilestoneCelebration | null;
   onAction: (check: SetupCheck) => void;
+  onDismissMilestone: () => void;
   onOpenSettings: () => void;
   onRefresh: () => Promise<SetupStatus | null>;
   onStartRecording: () => void;
@@ -1480,6 +1777,33 @@ function DictatePanel({
           </div>
         )}
       </div>
+
+      <StatsBentoDashboard stats={stats} />
+
+      <AnimatePresence>
+        {milestoneCelebration && (
+          <motion.div
+            className="milestone-toast"
+            key={milestoneCelebration.id}
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.98 }}
+            transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+            role="status"
+          >
+            <div className="milestone-toast__icon" aria-hidden>
+              <PartyPopper size={18} />
+            </div>
+            <div>
+              <strong>{formatMilestone(milestoneCelebration.milestone)} words reached</strong>
+              <span>Nice work. Echo added this milestone to your all-time stats.</span>
+            </div>
+            <IconButton label="Dismiss milestone" onClick={onDismissMilestone}>
+              <X size={14} />
+            </IconButton>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <motion.section
         key={appState}
@@ -2295,6 +2619,7 @@ function HistoryPanel({
 
 function StandaloneNotepadWindow() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const insertTextIntoNoteRef = useRef<(text: string) => Promise<void>>(async () => {});
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingBodyRef = useRef<string | null>(null);
   const [note, setNote] = useState<NotepadNote | null>(null);
@@ -2384,8 +2709,16 @@ function StandaloneNotepadWindow() {
       .catch(() => setWindowReady(true));
 
     currentWindow
+      .isFocused()
+      .then((focused) => {
+        emit("notepad-window-focus", focused).catch(() => {});
+      })
+      .catch(() => {});
+
+    currentWindow
       .onFocusChanged(({ payload }) => {
         if (payload) setWindowReady(true);
+        emit("notepad-window-focus", payload).catch(() => {});
       })
       .then((unlisten) => {
         unlistenFocus = unlisten;
@@ -2393,6 +2726,7 @@ function StandaloneNotepadWindow() {
       .catch(() => {});
 
     return () => {
+      emit("notepad-window-focus", false).catch(() => {});
       unlistenFocus?.();
     };
   }, []);
@@ -2454,6 +2788,27 @@ function StandaloneNotepadWindow() {
       textareaRef.current?.setSelectionRange(cursor, cursor);
     }, 0);
   };
+
+  insertTextIntoNoteRef.current = insertTextIntoNote;
+
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let unlistenInsert: (() => void) | null = null;
+
+    listen<string>("notepad-insert-transcript", (event) => {
+      setError("");
+      setDictationState("processing");
+      void insertTextIntoNoteRef.current(event.payload).finally(() => {
+        setDictationState("idle");
+      });
+    }).then((unlisten) => {
+      unlistenInsert = unlisten;
+    });
+
+    return () => {
+      unlistenInsert?.();
+    };
+  }, []);
 
   const handleCopy = async () => {
     if (!note) return;

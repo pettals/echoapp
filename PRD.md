@@ -12,6 +12,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 
 - First-run setup guides users through microphone readiness, Accessibility/paste permissions, provider choice, shortcut setup, and mic validation.
 - Dictation works end to end: capture focus, record, transcribe, optionally clean up, paste or copy as fallback, and save history.
+- During shortcut dictation, the Dynamic Island HUD shows the target app icon, live Groq partial transcript text, and a compact waveform; local Whisper shows target/waveform while recording and the final transcript after release.
 - macOS feels native: menu bar behavior, hidden-window mode, dock indicator, permission messaging, and a clear signing/notarization path.
 - Windows supports shortcut, recording, transcription, clipboard paste/fallback, settings, history, and installer builds.
 - Failures are understandable and recoverable, especially missing API key, missing local model, denied microphone access, denied paste automation, network failures, and unavailable audio devices.
@@ -22,6 +23,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Groq provider and local Whisper provider.
 - Download and manage local small and medium Whisper models.
 - Transcription history with copy, delete, and clear.
+- Dictate-screen insights for all-time word count, rolling WPM, day streak, next milestone progress, and one-time in-app milestone celebrations.
 - Local Notepad for autosaved notes, markdown preview, copy/delete, and note-specific dictation insertion.
 - Configurable shortcut, mic device, sounds, provider, and model choices.
 - Tray/menu bar app lifecycle.
@@ -39,8 +41,10 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - First run must not strand users in Settings without a clear next action.
 - Echo must expose a visible setup state for mic, shortcut, provider/model, and paste permissions.
 - Auto-paste must gracefully fall back to copying without losing the transcript.
+- Groq dictation must stream low-latency rolling partial transcripts into the Dynamic Island while preserving the final full-recording transcription as the source of truth for paste/history.
 - If no external paste target is captured, the persistent HUD must show the transcript with a copy action and a short countdown before returning to idle.
 - History must be bounded, user-clearable, and documented.
+- Dictation insights must store only aggregate usage stats, not transcript text, and must remain independent of transcript history retention.
 - Notepad notes must remain local, autosave while editing, and support dictation insertion without triggering external paste automation.
 - Local mode must explain model sizes, disk use, download state, and offline behavior.
 - Windows must not present macOS-only affordances as working features.
