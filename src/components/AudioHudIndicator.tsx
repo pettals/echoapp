@@ -367,7 +367,10 @@ export default function AudioHudIndicator({
               exit={{ opacity: 0, y: reduceMotion ? 0 : -2, scale: reduceMotion ? 1 : 0.96 }}
               transition={contentIn}
             >
-              <span className="audio-hud__target-icon" aria-hidden>
+              <span
+                className={`audio-hud__target-icon${targetIconUrl ? " audio-hud__target-icon--image" : ""}`}
+                aria-hidden
+              >
                 {targetIconUrl ? <img src={targetIconUrl} alt="" /> : <AppWindow size={17} strokeWidth={2.35} />}
               </span>
               <p className="audio-hud__live-text" aria-live="polite">

@@ -11,16 +11,16 @@
 - [x] Add macOS permission help for Microphone and Accessibility.
 - [ ] Harden paste/focus behavior on macOS across Notes, Safari/Chrome, Slack, Mail, Messages, VS Code, and text fields in unfocused apps.
 - [ ] Verify and fix Windows core loop: shortcut press/release, focus restore, clipboard write, paste simulation, settings, history, installer build.
-- [ ] Add fully structured error codes for network/API failure, missing local model, empty speech, mic unavailable, paste denied, and model download failure.
+- [ ] Complete structured error codes beyond partial Groq/config coverage: missing local model, empty speech, mic unavailable, paste denied, and model download failure.
 
 ## P1: Product Completeness
 
-- [ ] Add local model integrity checks, partial download cleanup, retry, and clearer disk-size messaging.
-- [ ] Add history privacy controls: disable history, retention count, clear confirmation.
+- [ ] Add local model checksum/integrity validation and clearer disk-size messaging; partial download cleanup and retry UI are partially in place.
+- [ ] Add history clear confirmation and verify disabled-history UX.
 - [ ] Add transcription cleanup behavior documentation and preview copy for local mode.
 - [x] Add local Notepad MVP with autosaved notes, markdown preview, and note-specific dictation insertion.
 - [x] Add Dictate insights bento dashboard with aggregate stats and milestone celebrations.
-- [ ] Add proper app metadata: author, copyright, bundle identifiers, icons, README production setup, license notes.
+- [ ] Add proper app metadata: author, copyright, license notes, README production setup, and final icon polish; bundle icons are partially updated.
 - [ ] Add macOS signing/notarization workflow and Windows signing/MSI release workflow.
 - [ ] Add crash/log diagnostics suitable for support without exposing transcript/API key content.
 
@@ -33,9 +33,9 @@
 - [x] Add Groq-first live transcript Dynamic Island with target app icon, rolling partial text, and local-provider fallback.
 - [x] Remove MUI/Emotion and replace with lightweight custom components plus lucide icons.
 - [ ] Add bundle-size/code-splitting follow-up if startup performance regresses.
-- [ ] Improve tray/menu wording and lifecycle: open, start/stop, settings, quit.
+- [ ] Finalize tray/menu wording and lifecycle QA: open, start/stop, settings, quit.
 - [ ] Add optional launch-at-login setting.
-- [ ] Add sound behavior parity or explicit platform differences for Windows.
+- [ ] Verify/document Windows sound behavior and media-ducking difference.
 - [ ] Add automated UI smoke tests for settings/history where practical.
 - [ ] Add manual QA checklist for macOS and Windows release candidates.
 
