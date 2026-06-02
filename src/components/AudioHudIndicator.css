@@ -24,7 +24,7 @@
   display: grid;
   place-items: center;
   overflow: visible;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 0;
   border-radius: 999px;
   background: var(--hud-black);
   box-shadow: none;
@@ -32,8 +32,8 @@
 }
 
 .audio-hud:focus-visible .audio-hud__island {
-  outline: 1px solid rgba(255, 255, 255, 0.22);
-  outline-offset: 2px;
+  outline: none;
+  outline-offset: 0;
 }
 
 .audio-hud__island::before,
@@ -46,11 +46,10 @@
 }
 
 .audio-hud__island::before {
-  inset: -8px;
-  z-index: -1;
-  background: radial-gradient(circle at 50% 50%, var(--hud-ambient), transparent 68%);
-  filter: blur(9px);
-  transform: scale(0.96);
+  inset: 0;
+  z-index: 0;
+  background: radial-gradient(circle at 50% 50%, var(--hud-ambient), transparent 72%);
+  transform: scale(0.98);
   transition:
     opacity 180ms var(--hud-motion-ease),
     transform 220ms var(--hud-motion-ease);
@@ -59,7 +58,7 @@
 .audio-hud__island::after {
   inset: 1px;
   z-index: 0;
-  background: linear-gradient(120deg, transparent 8%, rgba(255, 255, 255, 0.1) 44%, transparent 72%);
+  background: transparent;
   transform: translateX(-42%);
   transition: opacity 160ms var(--hud-motion-ease);
 }
@@ -89,6 +88,7 @@
   height: 100%;
   min-height: 52px;
   border-radius: 26px;
+  overflow: hidden;
 }
 
 .audio-hud--processing .audio-hud__island {
@@ -96,23 +96,27 @@
   height: 100%;
   min-height: 52px;
   border-radius: 26px;
+  overflow: hidden;
 }
 
 .audio-hud--complete .audio-hud__island {
   width: 132px;
   height: 34px;
+  overflow: hidden;
 }
 
 .audio-hud--copy .audio-hud__island {
   width: 420px;
   height: 92px;
   border-radius: 24px;
+  overflow: hidden;
 }
 
 .audio-hud--error .audio-hud__island {
   width: 240px;
   min-height: 54px;
   border-radius: 24px;
+  overflow: hidden;
 }
 
 .audio-hud--recording {
@@ -139,6 +143,14 @@
 .audio-hud--error .audio-hud__island::before {
   opacity: 1;
   transform: scale(1);
+}
+
+.audio-hud--recording .audio-hud__island,
+.audio-hud--processing .audio-hud__island,
+.audio-hud--complete .audio-hud__island,
+.audio-hud--copy .audio-hud__island,
+.audio-hud--error .audio-hud__island {
+  box-shadow: none;
 }
 
 .audio-hud--recording .audio-hud__island::before {
@@ -191,7 +203,7 @@
   display: grid;
   place-items: center;
   border-radius: inherit;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: none;
   transition:
     box-shadow 120ms var(--hud-motion-ease),
     filter 120ms var(--hud-motion-ease),
@@ -209,9 +221,7 @@
 .audio-hud__action:hover .audio-hud__action-circle,
 .audio-hud__action:focus-visible .audio-hud__action-circle {
   filter: brightness(1.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 6px 14px rgba(0, 0, 0, 0.24);
+  box-shadow: none;
   transform: translateY(-1px);
 }
 
@@ -281,12 +291,8 @@
   place-items: center;
   border-radius: 9px;
   color: rgba(255, 255, 255, 0.78);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.06)),
-    rgba(255, 255, 255, 0.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 15px rgba(0, 0, 0, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -482,9 +488,7 @@
   border-radius: 999px;
   color: white;
   background: rgba(52, 199, 89, 0.96);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    0 0 18px rgba(52, 199, 89, 0.2);
+  box-shadow: none;
 }
 
 .audio-hud__copy-review {
@@ -559,12 +563,12 @@
 
 @keyframes audio-hud-breathe {
   from {
-    opacity: 0.58;
-    transform: scale(0.96);
+    opacity: 0.42;
+    transform: scale(0.86);
   }
   to {
-    opacity: 1;
-    transform: scale(1.08);
+    opacity: 0.88;
+    transform: scale(1);
   }
 }
 

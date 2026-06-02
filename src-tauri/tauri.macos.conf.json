@@ -1,0 +1,49 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Echo",
+        "width": 720,
+        "height": 540,
+        "minWidth": 600,
+        "minHeight": 420,
+        "resizable": true,
+        "alwaysOnTop": false,
+        "decorations": true,
+        "transparent": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "skipTaskbar": false
+      },
+      {
+        "label": "indicator",
+        "title": "",
+        "width": 56,
+        "height": 14,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false
+      },
+      {
+        "label": "notepad",
+        "title": "Notepad",
+        "width": 980,
+        "height": 1040,
+        "minWidth": 520,
+        "minHeight": 640,
+        "resizable": true,
+        "alwaysOnTop": false,
+        "decorations": true,
+        "transparent": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "skipTaskbar": false,
+        "visible": false
+      }
+    ]
+  }
+}

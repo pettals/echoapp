@@ -1,8 +1,8 @@
 [package]
 name = "echo"
 version = "0.1.0"
-description = "Echo — a cross-platform voice dictation app powered by open-source AI"
-authors = ["you"]
+description = "Echo - a macOS-first voice dictation app from Pettal Technology"
+authors = ["Pettal Technology"]
 edition = "2021"
 
 [lib]
@@ -29,6 +29,8 @@ dirs = "5"
 whisper-rs = "0.16"
 futures-util = "0.3"
 keyring = "3"
+sha2 = "0.10"
+tauri-plugin-autostart = "2.5.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

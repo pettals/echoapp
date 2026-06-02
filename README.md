@@ -1,75 +1,90 @@
 # Echo
 
-A cross-platform desktop voice dictation app powered by open-source AI models. Press a global shortcut, speak, and get polished text pasted into your active application.
+Echo is a macOS-first desktop dictation app from Pettal Technology. Hold a global shortcut, speak naturally, and Echo transcribes your words before pasting into the app you were already using or copying to the clipboard as a safe fallback.
+
+## Product Status
+
+- macOS is the production priority for v1.
+- Windows support remains in the codebase, but Windows release builds and installer QA are deferred until they can be tested on a Windows machine.
+- Production distribution is planned as a freemium Pettal Technology product.
+- Development builds are for local testing and iteration, not final customer distribution.
 
 ## Features
 
-- **Global hotkey** — start/stop recording from any app (default: `Cmd+Shift+Space` / `Ctrl+Shift+Space`)
-- **Fast transcription** — powered by Groq-hosted Whisper Large v3 Turbo (open-source)
-- **AI cleanup** — optional filler word removal and punctuation fixes via Llama 3.1 8B
-- **Auto-paste** — transcribed text is copied to clipboard and pasted into the focused app
-- **Configurable models** — choose speed vs accuracy for both transcription and cleanup
-- **macOS & Windows** — native builds for both platforms
+- Global shortcut recording with setup validation.
+- Groq-hosted Whisper transcription with optional Groq cleanup.
+- Local Whisper transcription with verified model downloads and offline raw transcripts.
+- macOS paste automation with clipboard fallback when Accessibility or focus restore is unavailable.
+- Local transcript history with bounded retention, disable-save support, delete, copy, and guarded clear-all.
+- Local Notepad with autosaved notes, markdown preview, and note-specific dictation insertion.
+- Dictation insights for aggregate usage stats without storing transcript text in analytics.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) v18+
-- [Rust](https://rustup.rs/) (stable toolchain)
-- A [Groq API key](https://console.groq.com/keys)
-- macOS: Xcode Command Line Tools
-- Windows: Visual Studio Build Tools with C++ workload
+- Node.js 18 or newer.
+- Rust stable toolchain.
+- macOS: Xcode Command Line Tools.
+- Optional for Groq mode: a Groq API key from the Groq console.
+- Optional for local mode: enough disk space for the selected Whisper model.
 
-## Setup
+## Development Setup
 
 ```bash
-# Install dependencies
 npm install
-
-# Run in development mode
 npm run tauri dev
 ```
 
-On first launch, you'll be prompted to enter your Groq API key in the Settings screen.
+On first launch, Echo guides setup for provider/model readiness, microphone access, shortcut validation, and paste permission guidance.
 
-## Building
+## Production Checks
+
+Run these before packaging or ticking production tasks:
 
 ```bash
-# Production build (creates .dmg on macOS, .msi on Windows)
-npm run tauri build
+npm run build
+cd src-tauri
+cargo check --locked
 ```
+
+If both frontend and Rust/Tauri code changed, run both checks. Existing `objc` macro warnings from the macOS private API path are known.
+
+## macOS Packaging Notes
+
+```bash
+npm run tauri build -- --bundles app,dmg
+```
+
+Before customer distribution, complete signing and notarization with Pettal Technology Apple Developer credentials. The manual GitHub Actions release workflow is documented in `docs/RELEASE.md`. Also test the signed build on a clean macOS account for microphone permission, Accessibility permission, global shortcut capture, paste fallback, tray/menu lifecycle, and local model download.
+
+Manual release QA checklists live in `docs/MANUAL_QA.md`.
+
+## Windows Status
+
+Windows is intentionally not considered production-ready yet. Do not treat a macOS pass as Windows verification. Before release, test shortcut press/release, focus restore, clipboard write, paste simulation, settings, history, local transcription, and installer launch on an actual Windows machine.
+
+The release workflow includes a Windows placeholder only. Signed Windows/MSI distribution remains blocked until Windows QA hardware is available.
 
 ## Architecture
 
+```text
+src/                  # React frontend: dashboard, settings, HUD, history, notepad
+src-tauri/src/        # Rust/Tauri backend
+  audio.rs            # Microphone recording via cpal
+  config.rs           # Settings persistence with backwards-compatible defaults
+  groq.rs             # Groq API client
+  input.rs            # Clipboard and paste simulation
+  model_download.rs   # Local Whisper model download and integrity validation
+  whisper.rs          # Local Whisper transcription
+  lib.rs              # Tauri commands and plugin setup
 ```
-src/                  # React frontend (overlay UI, settings)
-src-tauri/src/        # Rust backend
-  ├── audio.rs        # Microphone recording via cpal
-  ├── config.rs       # Settings persistence
-  ├── groq.rs         # Groq API client (Whisper + Llama)
-  ├── input.rs        # Paste simulation via enigo
-  ├── lib.rs          # Tauri commands and plugin setup
-  └── main.rs         # Entry point
-```
 
-## AI Models Used
+## AI Modes
 
-All models are open-source and hosted on [Groq](https://groq.com) for fast inference:
+| Mode | Transcription | Cleanup | Notes |
+| --- | --- | --- | --- |
+| Groq | Groq Whisper models | Optional Groq Llama cleanup | Fast cloud path; requires a Groq API key. |
+| Local | On-device Whisper small or medium | None | Offline raw transcript; no Groq cleanup is run. |
 
-| Purpose | Model | Speed |
-|---------|-------|-------|
-| Transcription (fast) | `whisper-large-v3-turbo` | 216x real-time |
-| Transcription (accurate) | `whisper-large-v3` | 189x real-time |
-| Cleanup (fast) | `llama-3.1-8b-instant` | ~560 tok/s |
-| Cleanup (quality) | `llama-3.3-70b-versatile` | ~280 tok/s |
+## License Notes
 
-## macOS Permissions
-
-Echo needs:
-- **Microphone access** — for audio recording
-- **Accessibility** — for simulating paste (Cmd+V) into other apps
-
-The app will prompt for these on first use.
-
-## License
-
-MIT
+Echo is a Pettal Technology product planned for freemium production distribution. See `LICENSE-NOTES.md` before sharing, packaging, or distributing builds.

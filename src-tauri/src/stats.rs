@@ -5,7 +5,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 const RECENT_WPM_SAMPLE_LIMIT: usize = 20;
-pub const WORD_MILESTONES: [u64; 9] = [100, 1_000, 2_000, 5_000, 7_500, 10_000, 20_000, 50_000, 100_000];
+pub const WORD_MILESTONES: [u64; 9] = [
+    100, 1_000, 2_000, 5_000, 7_500, 10_000, 20_000, 50_000, 100_000,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WpmSample {
@@ -179,15 +181,17 @@ fn crossed_milestones(before_words: u64, total_words: u64, achieved: &HashSet<u6
 }
 
 fn rolling_wpm(samples: &[WpmSample]) -> u64 {
-    let (words, duration_ms) = samples.iter().fold((0u64, 0u64), |(words, duration), sample| {
-        if sample.word_count == 0 || sample.duration_ms < 1_000 {
-            return (words, duration);
-        }
-        (
-            words.saturating_add(sample.word_count),
-            duration.saturating_add(sample.duration_ms),
-        )
-    });
+    let (words, duration_ms) = samples
+        .iter()
+        .fold((0u64, 0u64), |(words, duration), sample| {
+            if sample.word_count == 0 || sample.duration_ms < 1_000 {
+                return (words, duration);
+            }
+            (
+                words.saturating_add(sample.word_count),
+                duration.saturating_add(sample.duration_ms),
+            )
+        });
 
     if words == 0 || duration_ms == 0 {
         return 0;

@@ -135,7 +135,11 @@ mod macos {
             return None;
         }
 
-        let output = Command::new("base64").arg("-i").arg(&png_path).output().ok()?;
+        let output = Command::new("base64")
+            .arg("-i")
+            .arg(&png_path)
+            .output()
+            .ok()?;
         let _ = std::fs::remove_file(&png_path);
         if !output.status.success() {
             return None;
@@ -166,38 +170,81 @@ pub struct FocusTargetInfo {
 mod windows {
     use std::ptr;
 
+    #[derive(Clone, Debug)]
+    pub struct WindowTarget {
+        pub hwnd: usize,
+        pub process_id: u32,
+    }
+
     #[link(name = "user32")]
     extern "system" {
         fn GetForegroundWindow() -> *mut std::ffi::c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, process_id: *mut u32) -> u32;
+        fn GetCurrentThreadId() -> u32;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
         fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+        fn BringWindowToTop(hwnd: *mut std::ffi::c_void) -> i32;
+        fn IsIconic(hwnd: *mut std::ffi::c_void) -> i32;
         fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
     }
 
     const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
 
-    pub fn capture_foreground_window() -> Option<usize> {
+    pub fn capture_foreground_window() -> Option<WindowTarget> {
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd.is_null() {
-            None
-        } else {
-            Some(hwnd as usize)
+            return None;
         }
+
+        let mut process_id = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut process_id);
+        }
+
+        Some(WindowTarget {
+            hwnd: hwnd as usize,
+            process_id,
+        })
     }
 
-    pub fn restore_foreground_window(hwnd: usize) -> Result<(), String> {
+    pub fn restore_foreground_window(target: &WindowTarget) -> Result<(), String> {
+        let hwnd = target.hwnd;
         let handle = hwnd as *mut std::ffi::c_void;
         if handle.is_null() {
             return Err("Null window handle".to_string());
         }
+
         unsafe {
-            ShowWindow(handle, SW_RESTORE);
+            if IsIconic(handle) != 0 {
+                ShowWindow(handle, SW_RESTORE);
+            } else {
+                ShowWindow(handle, SW_SHOW);
+            }
+
+            let current_thread = GetCurrentThreadId();
+            let target_thread = GetWindowThreadProcessId(handle, ptr::null_mut());
+            let attached = target_thread != 0
+                && current_thread != target_thread
+                && AttachThreadInput(current_thread, target_thread, 1) != 0;
+
+            BringWindowToTop(handle);
             let result = SetForegroundWindow(handle);
+
+            if attached {
+                AttachThreadInput(current_thread, target_thread, 0);
+            }
+
             if result == 0 {
                 Err("SetForegroundWindow failed".to_string())
             } else {
                 Ok(())
             }
         }
+    }
+
+    pub fn is_current_process(target: &WindowTarget) -> bool {
+        target.process_id == std::process::id()
     }
 }
 
@@ -207,7 +254,7 @@ pub enum FocusTarget {
     #[cfg(target_os = "macos")]
     MacApp(String),
     #[cfg(target_os = "windows")]
-    WinHwnd(usize),
+    WinWindow(windows::WindowTarget),
     None,
 }
 
@@ -222,8 +269,8 @@ impl FocusTarget {
         }
         #[cfg(target_os = "windows")]
         {
-            if let Some(hwnd) = windows::capture_foreground_window() {
-                return FocusTarget::WinHwnd(hwnd);
+            if let Some(target) = windows::capture_foreground_window() {
+                return FocusTarget::WinWindow(target);
             }
         }
         FocusTarget::None
@@ -244,7 +291,7 @@ impl FocusTarget {
                 icon_data_url: macos::icon_data_url(bundle_id),
             }),
             #[cfg(target_os = "windows")]
-            FocusTarget::WinHwnd(_) => Some(FocusTargetInfo {
+            FocusTarget::WinWindow(_) => Some(FocusTargetInfo {
                 bundle_id: None,
                 name: None,
                 icon_data_url: None,
@@ -259,7 +306,7 @@ impl FocusTarget {
             #[cfg(target_os = "macos")]
             FocusTarget::MacApp(bundle_id) => macos::activate_app(bundle_id),
             #[cfg(target_os = "windows")]
-            FocusTarget::WinHwnd(hwnd) => windows::restore_foreground_window(*hwnd),
+            FocusTarget::WinWindow(target) => windows::restore_foreground_window(target),
             FocusTarget::None => Err("No focus target captured".to_string()),
         }
     }
@@ -270,7 +317,7 @@ impl FocusTarget {
             #[cfg(target_os = "macos")]
             FocusTarget::MacApp(id) => id == "com.andrewjohn.echo",
             #[cfg(target_os = "windows")]
-            FocusTarget::WinHwnd(_) => false,
+            FocusTarget::WinWindow(target) => windows::is_current_process(target),
             FocusTarget::None => false,
         }
     }

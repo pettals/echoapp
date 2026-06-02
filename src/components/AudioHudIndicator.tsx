@@ -131,11 +131,11 @@ export default function AudioHudIndicator({
     : { duration: idleActionRevealDuration, ease: hudEase };
   const islandVariants: Variants = {
     idleCollapsed: {
-      scale: reduceMotion ? 1 : [1.018, 0.96, 1],
+      scale: reduceMotion ? 1 : [0.96, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            scale: { duration: idleCollapseDuration, times: [0, 0.62, 1], ease: hudEase },
+            scale: { duration: idleCollapseDuration, ease: hudEase },
             layout: idleCollapseTransition,
           },
     },
@@ -149,34 +149,34 @@ export default function AudioHudIndicator({
           },
     },
     recording: {
-      scale: reduceMotion ? 1 : [0.985, 1.012, 1],
+      scale: reduceMotion ? 1 : [0.965, 0.992, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            scale: { duration: 0.22, ease: emphasizedEase },
+            scale: { duration: 0.2, ease: emphasizedEase },
             layout: islandSpring,
           },
     },
     processing: {
-      scale: reduceMotion ? 1 : [1.012, 0.99, 1],
+      scale: reduceMotion ? 1 : [0.985, 0.996, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            scale: { duration: 0.26, ease: hudEase },
+            scale: { duration: 0.22, ease: hudEase },
             layout: islandSpring,
           },
     },
     complete: {
-      scale: reduceMotion ? 1 : [0.96, 1.04, 1],
+      scale: reduceMotion ? 1 : [0.9, 0.985, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            scale: { duration: 0.24, times: [0, 0.62, 1], ease: emphasizedEase },
+            scale: { duration: 0.22, times: [0, 0.72, 1], ease: emphasizedEase },
             layout: islandSpring,
           },
     },
     copy: {
-      scale: reduceMotion ? 1 : [0.982, 1.006, 1],
+      scale: reduceMotion ? 1 : [0.975, 0.994, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
@@ -185,12 +185,10 @@ export default function AudioHudIndicator({
           },
     },
     error: {
-      x: reduceMotion ? 0 : [0, -7, 6, -4, 3, 0],
-      scale: reduceMotion ? 1 : [1, 1.018, 1],
+      scale: reduceMotion ? 1 : [0.982, 1, 0.992, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            x: { duration: 0.34, ease: "easeInOut" },
             scale: { duration: 0.26, ease: hudEase },
             layout: islandSpring,
           },
