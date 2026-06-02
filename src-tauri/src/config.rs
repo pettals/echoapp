@@ -122,6 +122,8 @@ pub struct AppConfig {
     pub history_limit: usize,
     #[serde(default = "default_appearance_theme")]
     pub appearance_theme: String,
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 fn default_model_provider() -> String {
@@ -170,6 +172,7 @@ impl Default for AppConfig {
             history_enabled: true,
             history_limit: default_history_limit(),
             appearance_theme: default_appearance_theme(),
+            launch_at_login: false,
         }
     }
 }

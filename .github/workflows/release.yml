@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build"
+        required: true
+        default: "macos"
+        type: choice
+        options:
+          - macos
+          - windows-placeholder
+      draft_release:
+        description: "Create a draft GitHub release"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  macos-signed-notarized:
+    name: macOS signed and notarized build
+    if: inputs.platform == 'macos'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate macOS release secrets
+        run: |
+          required=(
+            APPLE_CERTIFICATE
+            APPLE_CERTIFICATE_PASSWORD
+            APPLE_ID
+            APPLE_PASSWORD
+            APPLE_TEAM_ID
+            APPLE_SIGNING_IDENTITY
+          )
+
+          for name in "${required[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: ${name}"
+              exit 1
+            fi
+          done
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Rust
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: Build signed and notarized macOS bundles
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --bundles app,dmg --target universal-apple-darwin
+          tagName: echo-v__VERSION__
+          releaseName: Echo v__VERSION__
+          releaseBody: |
+            Draft macOS release for Pettal Technology QA.
+
+            Verify on a clean macOS account before publishing.
+          releaseDraft: ${{ inputs.draft_release }}
+          prerelease: true
+
+      - name: Upload macOS bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: echo-macos-signed-notarized
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  windows-release-placeholder:
+    name: Windows signing and MSI placeholder
+    if: inputs.platform == 'windows-placeholder'
+    runs-on: windows-latest
+    steps:
+      - name: Explain deferred Windows release path
+        shell: pwsh
+        run: |
+          Write-Host "Windows release builds are intentionally deferred."
+          Write-Host "Do not publish signed Windows installers until shortcut, focus restore, clipboard, paste simulation, settings, history, local transcription, and installer launch are tested on a Windows machine."
+          Write-Host "Expected future inputs: WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD, certificate thumbprint, timestamp URL, and a real Windows QA pass."

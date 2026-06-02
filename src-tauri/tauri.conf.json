@@ -23,8 +23,6 @@
         "alwaysOnTop": false,
         "decorations": true,
         "transparent": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
         "skipTaskbar": false
       },
       {
@@ -50,8 +48,6 @@
         "alwaysOnTop": false,
         "decorations": true,
         "transparent": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
         "skipTaskbar": false,
         "visible": false
       }
@@ -63,8 +59,15 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Pettal Technology",
+    "copyright": "Copyright (c) 2026 Pettal Technology. All rights reserved.",
+    "licenseFile": "../LICENSE-NOTES.md",
+    "category": "Productivity",
+    "shortDescription": "Mac-first voice dictation with Groq and local Whisper transcription.",
+    "longDescription": "Echo lets you hold a global shortcut, speak naturally, and paste or copy the resulting transcript into the app you were already using. Groq mode can clean up transcripts in the cloud; local Whisper mode keeps transcription on device and returns the raw transcript.",
     "icon": [
       "icons/32x32.png",
+      "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",

@@ -66,19 +66,29 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut child = Command::new("clip")
+        let mut child = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ])
             .stdin(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| format!("clip spawn error: {e}"))?;
+            .map_err(|e| format!("Set-Clipboard spawn error: {e}"))?;
 
         use std::io::Write;
         if let Some(mut stdin) = child.stdin.take() {
             stdin
                 .write_all(text.as_bytes())
-                .map_err(|e| format!("clip write error: {e}"))?;
+                .map_err(|e| format!("Set-Clipboard write error: {e}"))?;
             drop(stdin);
         }
-        child.wait().map_err(|e| format!("clip wait error: {e}"))?;
+        let status = child
+            .wait()
+            .map_err(|e| format!("Set-Clipboard wait error: {e}"))?;
+        if !status.success() {
+            return Err(format!("Set-Clipboard failed with status {status}"));
+        }
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }
@@ -103,12 +113,14 @@ pub fn simulate_paste() -> Result<(), String> {
         enigo
             .key(Key::Control, Direction::Press)
             .map_err(|e| format!("Key error: {e}"))?;
-        enigo
+        let paste_result = enigo
             .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| format!("Key error: {e}"))?;
-        enigo
+            .map_err(|e| format!("Key error: {e}"));
+        let release_result = enigo
             .key(Key::Control, Direction::Release)
-            .map_err(|e| format!("Key error: {e}"))?;
+            .map_err(|e| format!("Key release error: {e}"));
+        paste_result?;
+        release_result?;
     }
 
     Ok(())

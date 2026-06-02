@@ -1,4 +1,4 @@
-use crate::{audio, config::AppConfig, secure, whisper};
+use crate::{audio, config::AppConfig, model_download, secure};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,7 +43,7 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
     if trimmed.is_empty() {
         return ShortcutValidation {
             valid: false,
-            message: "Enter a shortcut such as CommandOrControl+Shift+Space.".to_string(),
+            message: "Press any key or key combo for the shortcut.".to_string(),
         };
     }
 
@@ -53,10 +53,10 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
         .filter(|p| !p.is_empty())
         .collect();
 
-    if parts.len() < 2 {
+    if parts.is_empty() {
         return ShortcutValidation {
             valid: false,
-            message: "Use at least one modifier plus one key.".to_string(),
+            message: "Press any key or key combo for the shortcut.".to_string(),
         };
     }
 
@@ -73,19 +73,34 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
         "super",
         "meta",
     ];
-    let has_modifier = parts[..parts.len() - 1]
-        .iter()
-        .any(|part| modifiers.contains(&part.as_str()));
-    if !has_modifier {
+
+    let mut seen = std::collections::HashSet::new();
+    if parts.iter().any(|part| !seen.insert(part.as_str())) {
         return ShortcutValidation {
             valid: false,
-            message:
-                "Shortcut must include a modifier such as CommandOrControl, Shift, Alt, or Control."
-                    .to_string(),
+            message: "Shortcut contains duplicate keys. Press the shortcut again.".to_string(),
+        };
+    }
+
+    let prefix_has_only_modifiers = parts[..parts.len().saturating_sub(1)]
+        .iter()
+        .all(|part| modifiers.contains(&part.as_str()));
+    if !prefix_has_only_modifiers {
+        return ShortcutValidation {
+            valid: false,
+            message: "Shortcut format is not recognized. Press one key or a modifier combo."
+                .to_string(),
         };
     }
 
     let key = parts.last().map(String::as_str).unwrap_or_default();
+    if modifiers.contains(&key) {
+        return ShortcutValidation {
+            valid: false,
+            message: "Choose a final key, not only modifier keys.".to_string(),
+        };
+    }
+
     let valid_key = key.len() == 1
         || matches!(
             key,
@@ -123,14 +138,14 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
     if !valid_key {
         return ShortcutValidation {
             valid: false,
-            message: "Shortcut key is not recognized. Try CommandOrControl+Shift+Space."
-                .to_string(),
+            message: "Shortcut key is not recognized. Try another key or key combo.".to_string(),
         };
     }
 
     ShortcutValidation {
         valid: true,
-        message: "Shortcut format looks valid.".to_string(),
+        message: "Shortcut format looks valid. If the system rejects it, choose another key."
+            .to_string(),
     }
 }
 
@@ -267,7 +282,7 @@ fn get_status_inner(config: &AppConfig, credential_error: Option<&str>) -> Setup
         };
         checks.push(provider_check);
     } else {
-        let downloaded = whisper::is_model_downloaded(&config.local_model_size).unwrap_or(false);
+        let downloaded = model_download::is_model_available(&config.local_model_size);
         checks.push(if downloaded {
             check(
                 "provider",

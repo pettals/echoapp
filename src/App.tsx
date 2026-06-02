@@ -1,15 +1,28 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type MouseEvent,
+  type PointerEvent,
+} from "react";
 import {
   AlertCircle,
   AudioWaveform,
   BookOpen,
   CheckCircle2,
   CircleDot,
+  Cloud,
   Copy,
+  Cpu,
   FileText,
   Flame,
   Gauge,
   History,
+  Keyboard,
   Mic,
   PartyPopper,
   Pencil,
@@ -24,21 +37,20 @@ import {
   Trophy,
   X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import AudioHudIndicator, { type AudioHudIndicatorState } from "./components/AudioHudIndicator";
 import AnimatedOrb from "./components/AnimatedOrb";
-import Settings from "./components/Settings";
 import { Alert, Button, Card, Chip, IconButton, Progress } from "./components/ui";
-import echoLogo from "./assets/echo-logo.png";
 import "./App.css";
 
+const Settings = lazy(() => import("./components/Settings"));
+const ReactMarkdown = lazy(() => import("react-markdown"));
+
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
-type ActiveTab = "dictate" | "notepad" | "history" | "settings";
+type ActiveTab = "onboarding" | "dictate" | "notepad" | "history" | "settings";
 type DesktopPlatform = "macos" | "windows";
 type DictationTarget = "external" | "standalone-notepad";
 type IndicatorMode =
@@ -82,6 +94,7 @@ export interface AppConfig {
   history_enabled: boolean;
   history_limit: number;
   appearance_theme: AppearanceTheme;
+  launch_at_login: boolean;
 }
 
 interface SecureSaveStatus {
@@ -101,6 +114,42 @@ interface HistoryItem {
   paste_result: string;
 }
 
+interface StructuredAppError {
+  code: string;
+  message: string;
+  retryable?: boolean;
+  actionLabel?: string | null;
+}
+
+interface PasteTranscriptResult {
+  status: string;
+  warning?: StructuredAppError | null;
+}
+
+interface GroqReadiness {
+  ok: boolean;
+  message: string;
+  transcription_model_ok: boolean;
+  cleanup_model_ok: boolean;
+}
+
+interface ModelStatus {
+  downloaded: boolean;
+  downloading: boolean;
+  file_size_bytes: number;
+  expected_size_bytes: number;
+  integrity_checked: boolean;
+  integrity_error: string | null;
+  model_size: string;
+}
+
+interface DownloadProgress {
+  bytes_downloaded: number;
+  total_bytes: number;
+  percentage: number;
+  model_size: string;
+}
+
 interface DictationStats {
   total_words: number;
   dictation_count: number;
@@ -108,6 +157,33 @@ interface DictationStats {
   day_streak: number;
   next_milestone: number | null;
   next_milestone_progress: number;
+}
+
+type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
+
+function MarkdownPreview(props: MarkdownProps) {
+  return (
+    <Suspense fallback={<p className="notepad-markdown__empty">Loading preview...</p>}>
+      <ReactMarkdown {...props} />
+    </Suspense>
+  );
+}
+
+function SettingsFallback() {
+  return (
+    <div className="settings-pane">
+      <div className="page-heading page-heading--split">
+        <div>
+          <p>Preferences</p>
+          <h2>Settings</h2>
+          <span>Loading settings...</span>
+        </div>
+      </div>
+      <div className="ui-card lazy-panel-fallback" role="status">
+        <span>Preparing Settings</span>
+      </div>
+    </div>
+  );
 }
 
 interface DictationStatsUpdate {
@@ -145,6 +221,11 @@ interface ShortcutValidation {
   message: string;
 }
 
+interface AppShortcutEvent {
+  shortcut: string;
+  state: "Pressed" | "Released" | string;
+}
+
 const WINDOW_LABEL = (() => {
   try {
     return getCurrentWindow().label;
@@ -169,6 +250,7 @@ const INDICATOR_COPY_REVIEW_SIZE = { width: 420, height: 92 };
 const INDICATOR_ERROR_SIZE = { width: 240, height: 72 };
 const COPY_REVIEW_DURATION_MS = 5000;
 const PANEL_TRANSITION = { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] as const };
+const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt"]);
 
 const MOCK_CONFIG: AppConfig = {
   groq_api_key: "gsk_mock_preview_key",
@@ -186,6 +268,7 @@ const MOCK_CONFIG: AppConfig = {
   history_enabled: true,
   history_limit: 100,
   appearance_theme: "dark",
+  launch_at_login: false,
 };
 
 const MOCK_SETUP_STATUS: SetupStatus = {
@@ -286,8 +369,58 @@ function detectDesktopPlatform(): DesktopPlatform {
   return "macos";
 }
 
+function normalizeShortcutKey(key: string): string {
+  if (key === " ") return "Space";
+  if (key.startsWith("Arrow")) return key.replace("Arrow", "");
+  if (key === "Esc") return "Escape";
+  if (key.length === 1) return key.toUpperCase();
+  return key;
+}
+
+function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElement>): string | null {
+  if (MODIFIER_KEYS.has(event.key)) return null;
+
+  const parts: string[] = [];
+  if (event.metaKey || event.ctrlKey) parts.push("CommandOrControl");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+
+  const key = normalizeShortcutKey(event.key);
+  if (!parts.includes(key)) parts.push(key);
+
+  return parts.join("+");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
+function isStructuredAppError(error: unknown): error is StructuredAppError {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    "message" in error &&
+    typeof error.message === "string"
+  );
+}
+
+function errorCode(error: unknown): string {
+  if (isStructuredAppError(error)) return error.code;
+  if (typeof error === "string") return error;
+  return "";
+}
+
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
+  if (isStructuredAppError(error)) {
+    const action = error.actionLabel ? ` ${error.actionLabel}.` : "";
+    return `${error.message}${action}`;
+  }
   if (typeof error === "string") return error;
   if (
     error &&
@@ -468,11 +601,20 @@ function HudPreviewScreen() {
       ? previewStateParam
       : "idle";
   const previewLevel = Math.min(Math.max(Number(params?.get("hudLevel") ?? 0.72), 0), 1);
+  const previewIndicatorMode: IndicatorMode =
+    previewState === "complete" ? "success" : previewState === "copy" ? "copied_no_target" : previewState;
+  const previewFrameSize = indicatorSizeForMode(
+    previewIndicatorMode,
+    previewState === "idle" && previewExpanded
+  );
 
   return (
     <main className="hud-preview-screen">
       <section className="hud-preview-stage" aria-label="Audio HUD preview">
-        <div className="hud-preview-frame">
+        <div
+          className="hud-preview-frame"
+          style={{ width: previewFrameSize.width, height: previewFrameSize.height }}
+        >
           <AudioHudIndicator
             state={previewState}
             level={previewLevel}
@@ -505,6 +647,7 @@ function DockIndicator() {
   const [expanded, setExpanded] = useState(false);
   const prevRecording = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastIndicatorSizeRef = useRef<{ width: number; height: number } | null>(null);
   const platform = detectDesktopPlatform();
   const recording = mode === "recording";
   const hudState = mapIndicatorToHudState(mode);
@@ -537,13 +680,24 @@ function DockIndicator() {
     let cancelled = false;
     const targetSize = indicatorSizeForMode(mode, expanded, liveTranscript);
 
-    const resizeIndicator = async () => {
+    const resizeIndicator = async (force = false) => {
       try {
         if (cancelled) return;
+        const lastSize = lastIndicatorSizeRef.current;
+        if (
+          !force &&
+          lastSize &&
+          Math.abs(lastSize.width - targetSize.width) < 0.5 &&
+          Math.abs(lastSize.height - targetSize.height) < 0.5
+        ) {
+          return;
+        }
         await invoke("reposition_indicator", {
           width: targetSize.width,
           height: targetSize.height,
+          force,
         });
+        lastIndicatorSizeRef.current = targetSize;
       } catch {
         /* preview or hidden window */
       }
@@ -552,7 +706,7 @@ function DockIndicator() {
     resizeIndicator();
 
     let dockPoll: ReturnType<typeof setInterval> | null = null;
-    if (platform === "macos" || mode !== "idle" || expanded) {
+    if (mode !== "idle") {
       dockPoll = setInterval(resizeIndicator, 500);
     }
 
@@ -562,7 +716,7 @@ function DockIndicator() {
         clearInterval(dockPoll);
       }
     };
-  }, [mode, expanded, liveTranscript, platform]);
+  }, [mode, expanded, liveTranscript]);
 
   useEffect(() => {
     if (!HAS_TAURI) return;
@@ -574,7 +728,9 @@ function DockIndicator() {
         await invoke("reposition_indicator", {
           width: targetSize.width,
           height: targetSize.height,
+          force: true,
         });
+        lastIndicatorSizeRef.current = targetSize;
       } catch {
         /* ignore */
       }
@@ -614,6 +770,7 @@ function DockIndicator() {
         invoke("reposition_indicator", {
           width: INDICATOR_COMPACT_SIZE.width,
           height: INDICATOR_COMPACT_SIZE.height,
+          force: true,
         })
       )
       .catch(() => {});
@@ -895,6 +1052,10 @@ function MainApp() {
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [shortcutError, setShortcutError] = useState("");
   const [appearancePreview, setAppearancePreview] = useState<AppearanceTheme | null>(null);
+  const [onboardingCompletionVisible, setOnboardingCompletionVisible] = useState(false);
+  const [onboardingFirstDictationPassed, setOnboardingFirstDictationPassed] = useState(false);
+  const [onboardingDictationState, setOnboardingDictationState] = useState<"idle" | "recording" | "processing" | "success" | "error">("idle");
+  const [onboardingDictationMessage, setOnboardingDictationMessage] = useState("");
   const contentMainColRef = useRef<HTMLDivElement | null>(null);
   const registeredShortcut = useRef<string | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -907,9 +1068,16 @@ function MainApp() {
   const notepadFocusedRef = useRef(false);
   const dictationTargetRef = useRef<DictationTarget>("external");
   const milestoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onboardingCompletionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastDictationResultRef = useRef<string | null>(null);
   const shortcutPressedRef = useRef<() => void>(() => {});
   const shortcutReleasedRef = useRef<() => void>(() => {});
   const resolvedTheme = useResolvedTheme(appearancePreview ?? config?.appearance_theme ?? "dark");
+  const onboardingLocked =
+    !config ||
+    onboardingCompletionVisible ||
+    activeTab === "onboarding" ||
+    config.onboarding_completed === false;
 
   const setIndicatorMode = useCallback((mode: IndicatorMode, transcript?: string) => {
     emitIndicatorMode(mode, transcript).catch(() => {});
@@ -973,7 +1141,17 @@ function MainApp() {
 
     try {
       const cfg = await invoke<AppConfig>("get_config");
-      const normalized = { ...cfg, appearance_theme: normalizeTheme(cfg.appearance_theme) };
+      let launchAtLogin = cfg.launch_at_login;
+      try {
+        launchAtLogin = await invoke<boolean>("get_launch_at_login");
+      } catch (e) {
+        console.warn("Launch-at-login status unavailable:", e);
+      }
+      const normalized = {
+        ...cfg,
+        appearance_theme: normalizeTheme(cfg.appearance_theme),
+        launch_at_login: launchAtLogin,
+      };
       setConfig(normalized);
       return normalized;
     } catch (e) {
@@ -1046,6 +1224,7 @@ function MainApp() {
     async (captureFocus = true): Promise<boolean> => {
       if (startInFlightRef.current) return false;
       startInFlightRef.current = true;
+      lastDictationResultRef.current = null;
 
       try {
         if (!HAS_TAURI) {
@@ -1135,14 +1314,13 @@ function MainApp() {
       await emitIndicatorLiveTranscript(finalText, true);
       setTranscript(finalText);
       const activeTarget = dictationTargetRef.current;
-      const result =
+      const pasteResult =
         activeTarget === "standalone-notepad"
-          ? await emit("notepad-insert-transcript", finalText).then(() => "pasted")
-          : await invoke<string>("paste_transcript", { text: finalText });
-      const pasteWarning =
-        result === "copied_accessibility"
-          ? "Copied because Echo is not enabled in Accessibility."
-          : "";
+          ? { status: "pasted", warning: null }
+          : await invoke<PasteTranscriptResult>("paste_transcript", { text: finalText });
+      const result = pasteResult.status;
+      lastDictationResultRef.current = result;
+      const pasteWarning = pasteResult.warning ? formatErrorMessage(pasteResult.warning) : "";
       setErrorMsg([recoverableWarning, pasteWarning].filter(Boolean).join(" "));
 
       if (result === "pasted") {
@@ -1191,14 +1369,26 @@ function MainApp() {
       return true;
     } catch (e: unknown) {
       const msg = formatErrorMessage(e);
-      if (msg === NO_SPEECH_DETECTED) {
+      if (msg === NO_SPEECH_DETECTED || errorCode(e) === "empty_speech") {
         recordingStartedAtRef.current = null;
         resetDictationTarget();
+        lastDictationResultRef.current = null;
         setTranscript("");
-        setErrorMsg("");
+        setErrorMsg(formatErrorMessage(e));
         setAppState("idle");
         setIndicatorMode("idle");
         return true;
+      }
+
+      if (errorCode(e) === "not_recording" || msg.includes("Not recording")) {
+        recordingStartedAtRef.current = null;
+        resetDictationTarget();
+        lastDictationResultRef.current = null;
+        setTranscript("");
+        setErrorMsg("Recording has already stopped. Start a new dictation and try again.");
+        setAppState("idle");
+        setIndicatorMode("idle");
+        return false;
       }
 
       setErrorMsg(msg);
@@ -1206,6 +1396,7 @@ function MainApp() {
       setIndicatorMode("error");
       recordingStartedAtRef.current = null;
       resetDictationTarget();
+      lastDictationResultRef.current = null;
       return false;
     } finally {
       invoke("resume_media").catch(() => {});
@@ -1284,37 +1475,72 @@ function MainApp() {
   shortcutPressedRef.current = handleShortcutPressed;
   shortcutReleasedRef.current = handleShortcutReleased;
 
-  const registerShortcut = useCallback(async (shortcut: string) => {
-    if (!HAS_TAURI) return;
+  const registerShortcut = useCallback(async (shortcut: string): Promise<boolean> => {
+    if (!HAS_TAURI) return true;
 
     try {
       const validation = await invoke<ShortcutValidation>("validate_shortcut", { shortcut });
       if (!validation.valid) {
         setShortcutError(validation.message);
-        return;
+        return false;
       }
 
-      if (registeredShortcut.current) {
-        await unregister(registeredShortcut.current);
-        registeredShortcut.current = null;
-      }
-      await register(shortcut, (event) => {
-        if (event.state === "Pressed") {
-          void shortcutPressedRef.current();
-        } else if (event.state === "Released") {
-          void shortcutReleasedRef.current();
-        }
-      });
+      await invoke("register_app_shortcut", { shortcut });
       registeredShortcut.current = shortcut;
       setShortcutError("");
+      return true;
     } catch (e) {
       const msg = formatErrorMessage(e);
       setShortcutError(
         `Could not register ${shortcut}. Choose another shortcut or quit the app already using it. ${msg}`
       );
       console.error("Failed to register shortcut:", e);
+      return false;
     }
   }, []);
+
+  const saveConfig = useCallback(async (nextConfig: AppConfig) => {
+    const normalizedConfig = {
+      ...nextConfig,
+      groq_api_key: nextConfig.groq_api_key.trim(),
+    };
+
+    if (!HAS_TAURI) {
+      setConfig(normalizedConfig);
+      setAppearancePreview(null);
+      return {
+        config: normalizedConfig,
+        secure_storage: { state: "verified", message: "" },
+      } satisfies ConfigSaveResult;
+    }
+
+    const launchAtLogin = await invoke<boolean>("set_launch_at_login", {
+      enabled: normalizedConfig.launch_at_login,
+    });
+    normalizedConfig.launch_at_login = launchAtLogin;
+
+    const saveResult = await invoke<ConfigSaveResult>("save_config", { config: normalizedConfig });
+    const savedConfig = saveResult.config;
+    const normalizedSavedConfig = {
+      ...savedConfig,
+      appearance_theme: normalizeTheme(savedConfig.appearance_theme),
+    };
+
+    setConfig(normalizedSavedConfig);
+    setErrorMsg(
+      saveResult.secure_storage.state === "verified" ? "" : saveResult.secure_storage.message
+    );
+    setAppearancePreview(null);
+    emit("appearance-theme-changed", normalizedSavedConfig.appearance_theme).catch(() => {});
+    emit("shortcut-changed", normalizedSavedConfig.shortcut).catch(() => {});
+    await loadSetupStatus();
+    await registerShortcut(normalizedSavedConfig.shortcut);
+
+    return {
+      ...saveResult,
+      config: normalizedSavedConfig,
+    };
+  }, [loadSetupStatus, registerShortcut]);
 
   const loadHistory = useCallback(async () => {
     if (!HAS_TAURI) {
@@ -1334,7 +1560,9 @@ function MainApp() {
   useEffect(() => {
     loadConfig().then((cfg) => {
       if (cfg) {
-        if (cfg.model_provider === "api" && !cfg.groq_api_key) {
+        if (!cfg.onboarding_completed) {
+          setActiveTab("onboarding");
+        } else if (cfg.model_provider === "api" && !cfg.groq_api_key) {
           setActiveTab("settings");
         }
         registerShortcut(cfg.shortcut);
@@ -1345,11 +1573,16 @@ function MainApp() {
     loadStats();
     return () => {
       if (registeredShortcut.current) {
-        unregister(registeredShortcut.current).catch(console.error);
+        invoke("unregister_app_shortcut").catch(console.error);
+        registeredShortcut.current = null;
       }
       if (milestoneTimerRef.current) {
         clearTimeout(milestoneTimerRef.current);
         milestoneTimerRef.current = null;
+      }
+      if (onboardingCompletionTimerRef.current) {
+        clearTimeout(onboardingCompletionTimerRef.current);
+        onboardingCompletionTimerRef.current = null;
       }
     };
   }, [loadConfig, loadHistory, loadSetupStatus, loadStats, registerShortcut]);
@@ -1362,6 +1595,14 @@ function MainApp() {
     if (!HAS_TAURI) return;
 
     const unlisten: (() => void)[] = [];
+    listen<AppShortcutEvent>("app-shortcut", (event) => {
+      if (event.payload.state === "Pressed") {
+        void shortcutPressedRef.current();
+      } else if (event.payload.state === "Released") {
+        void shortcutReleasedRef.current();
+      }
+    }).then((u) => unlisten.push(u));
+
     listen("tray-start-recording", () => {
       void handleStartRecording();
     }).then((u) => unlisten.push(u));
@@ -1452,35 +1693,122 @@ function MainApp() {
   };
 
   const handleSaveSettings = async (newConfig: AppConfig) => {
-    const normalizedConfig = {
-      ...newConfig,
-      groq_api_key: newConfig.groq_api_key.trim(),
-    };
+    await saveConfig(newConfig);
+    setActiveTab("dictate");
+  };
 
-    if (!HAS_TAURI) {
-      setConfig(normalizedConfig);
-      setAppearancePreview(null);
-      setActiveTab("dictate");
+  const handleChooseOnboardingProvider = async (provider: AppConfig["model_provider"]) => {
+    if (!config) return;
+    setOnboardingFirstDictationPassed(false);
+    await saveConfig({ ...config, model_provider: provider });
+  };
+
+  const handleChooseOnboardingLocalModel = async (localModelSize: AppConfig["local_model_size"]) => {
+    if (!config) return;
+    setOnboardingFirstDictationPassed(false);
+    await saveConfig({
+      ...config,
+      model_provider: "local",
+      local_model_size: localModelSize,
+    });
+  };
+
+  const handleSaveOnboardingShortcut = async (shortcut: string) => {
+    if (!config) return false;
+    setOnboardingFirstDictationPassed(false);
+    await saveConfig({ ...config, shortcut });
+    return registerShortcut(shortcut);
+  };
+
+  const handleSaveOnboardingGroqKey = async (groqApiKey: string) => {
+    if (!config) return "";
+    setOnboardingFirstDictationPassed(false);
+    const result = await saveConfig({
+      ...config,
+      model_provider: "api",
+      groq_api_key: groqApiKey,
+    });
+    return result.secure_storage.state === "verified" ? "" : result.secure_storage.message;
+  };
+
+  const handleSaveOnboardingInputDevice = async (inputDevice: string | null) => {
+    if (!config) return;
+    setOnboardingFirstDictationPassed(false);
+    await saveConfig({ ...config, input_device: inputDevice });
+  };
+
+  const handleStartOnboardingDictation = async () => {
+    setOnboardingFirstDictationPassed(false);
+    setOnboardingDictationMessage("");
+    const started = await startRecording(false);
+    if (started) {
+      setOnboardingDictationState("recording");
+      setOnboardingDictationMessage("Speak a short sentence, then stop the test.");
+    } else {
+      setOnboardingDictationState("error");
+      setOnboardingDictationMessage(errorMsg || "Could not start recording. Review setup and try again.");
+    }
+  };
+
+  const handleStopOnboardingDictation = async () => {
+    if (HAS_TAURI) {
+      const recording = await invoke<boolean>("is_recording");
+      if (!recording) {
+        setOnboardingFirstDictationPassed(false);
+        setOnboardingDictationState("idle");
+        setOnboardingDictationMessage("Start the test dictation first, then stop it after speaking.");
+        setErrorMsg("");
+        return;
+      }
+    }
+
+    setOnboardingDictationState("processing");
+    setOnboardingDictationMessage("Transcribing and checking the paste/copy fallback...");
+    const completed = await stopAndPaste();
+    const result = lastDictationResultRef.current;
+    const passed =
+      completed &&
+      !!result &&
+      ["pasted", "copied", "copied_no_target", "copied_accessibility"].includes(result);
+
+    if (passed) {
+      setOnboardingFirstDictationPassed(true);
+      setOnboardingDictationState("success");
+      setOnboardingDictationMessage(
+        result === "pasted"
+          ? "First dictation worked and pasted into the target."
+          : "First dictation worked. Echo copied the transcript as a fallback."
+      );
+      await loadSetupStatus();
       return;
     }
 
-    const saveResult = await invoke<ConfigSaveResult>("save_config", { config: normalizedConfig });
-    const savedConfig = saveResult.config;
-    const normalizedSavedConfig = {
-      ...savedConfig,
-      appearance_theme: normalizeTheme(savedConfig.appearance_theme),
-    };
+    setOnboardingFirstDictationPassed(false);
+    setOnboardingDictationState("error");
+    setOnboardingDictationMessage(errorMsg || "Try again with a short spoken sentence.");
+  };
 
-    setConfig(normalizedSavedConfig);
-    setErrorMsg(
-      saveResult.secure_storage.state === "verified" ? "" : saveResult.secure_storage.message
+  const handleCompleteOnboarding = async () => {
+    if (!config) return;
+    const latestStatus = await loadSetupStatus();
+    const canComplete = latestStatus?.ready && !shortcutError && onboardingFirstDictationPassed;
+    if (!canComplete) {
+      setErrorMsg("Finish setup and complete the first dictation test before leaving onboarding.");
+      return;
+    }
+    await saveConfig({ ...config, onboarding_completed: true });
+    setOnboardingCompletionVisible(true);
+    if (onboardingCompletionTimerRef.current) {
+      clearTimeout(onboardingCompletionTimerRef.current);
+    }
+    onboardingCompletionTimerRef.current = setTimeout(
+      () => {
+        setActiveTab("dictate");
+        setOnboardingCompletionVisible(false);
+        onboardingCompletionTimerRef.current = null;
+      },
+      reduceMotion ? 400 : 1200
     );
-    setAppearancePreview(null);
-    emit("appearance-theme-changed", normalizedSavedConfig.appearance_theme).catch(() => {});
-    emit("shortcut-changed", normalizedSavedConfig.shortcut).catch(() => {});
-    await loadSetupStatus();
-    setActiveTab("dictate");
-    await registerShortcut(normalizedSavedConfig.shortcut);
   };
 
   const handleSetupAction = async (check: SetupCheck) => {
@@ -1496,6 +1824,19 @@ function MainApp() {
     setActiveTab("settings");
   };
 
+  const handleOnboardingSetupAction = async (check: SetupCheck) => {
+    if (check.id === "paste" || check.action_label?.includes("Accessibility")) {
+      await invoke("request_accessibility_permission").catch(console.error);
+      await loadSetupStatus();
+      return;
+    }
+    if (check.id === "microphone") {
+      await invoke("open_setup_help", { target: "microphone" }).catch(console.error);
+      return;
+    }
+    setErrorMsg("Complete this step in onboarding before the main app opens.");
+  };
+
   const startWindowDrag = (event: MouseEvent<HTMLElement> | PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || !HAS_TAURI) return;
     const target = event.target as HTMLElement | null;
@@ -1503,6 +1844,76 @@ function MainApp() {
     event.preventDefault();
     getCurrentWindow().startDragging().catch(console.error);
   };
+
+  if (onboardingLocked) {
+    return (
+      <main
+        className="window-root window-root--main onboarding-shell"
+        data-platform={platform}
+        data-preview={!HAS_TAURI ? "true" : undefined}
+        data-theme={resolvedTheme}
+      >
+        <div
+          className="titlebar-drag-region"
+          data-tauri-drag-region
+          onMouseDown={startWindowDrag}
+          aria-hidden
+        />
+        <section className="onboarding-window" data-tauri-drag-region onMouseDown={startWindowDrag}>
+          <AnimatePresence mode="wait" initial={false}>
+            {!config && (
+              <motion.div
+                key="onboarding-loading"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+              >
+                <Card className="onboarding-card onboarding-card--carousel onboarding-loading-card">
+                  <Chip tone="accent">Setup</Chip>
+                  <h3>Preparing Echo</h3>
+                  <p>Loading your setup state...</p>
+                </Card>
+              </motion.div>
+            )}
+            {config && onboardingCompletionVisible && (
+              <OnboardingSuccess key="onboarding-success" reduceMotion={reduceMotion} />
+            )}
+            {config && !onboardingCompletionVisible && (
+              <motion.div
+                key="onboarding-flow"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+              >
+                <OnboardingPanel
+                  config={config}
+                  errorMsg={errorMsg}
+                  platform={platform}
+                  setupStatus={setupStatus}
+                  shortcutError={shortcutError}
+                  firstDictationPassed={onboardingFirstDictationPassed}
+                  firstDictationState={onboardingDictationState}
+                  firstDictationMessage={onboardingDictationMessage}
+                  onAction={handleOnboardingSetupAction}
+                  onChooseProvider={handleChooseOnboardingProvider}
+                  onChooseLocalModel={handleChooseOnboardingLocalModel}
+                  onComplete={() => void handleCompleteOnboarding()}
+                  onRefresh={loadSetupStatus}
+                  onSaveGroqKey={handleSaveOnboardingGroqKey}
+                  onSaveInputDevice={handleSaveOnboardingInputDevice}
+                  onSaveShortcut={handleSaveOnboardingShortcut}
+                  onStartFirstDictation={handleStartOnboardingDictation}
+                  onStopFirstDictation={handleStopOnboardingDictation}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main
@@ -1520,20 +1931,15 @@ function MainApp() {
 
       <aside className="sidebar" data-tauri-drag-region>
         <div className="sidebar-header" data-tauri-drag-region onMouseDown={startWindowDrag}>
-          <div className="app-logo-wrap">
-            <img src={echoLogo} alt="Echo" className="app-logo" draggable={false} />
-            <div>
-              <h1>Echo</h1>
-              <p>Dictation</p>
-            </div>
-          </div>
+          <span className="app-logo" role="img" aria-label="Echo" />
+          <span className="app-wordmark">Echo</span>
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
           <NavButton
             active={activeTab === "dictate"}
             icon={<AudioWaveform />}
-            label="Dictate"
+            label="Home"
             onClick={() => setActiveTab("dictate")}
           />
           <NavButton
@@ -1592,8 +1998,9 @@ function MainApp() {
                     onAction={handleSetupAction}
                     onDismissMilestone={dismissMilestoneCelebration}
                     onOpenSettings={() => setActiveTab("settings")}
+                    onOpenNotepad={() => setActiveTab("notepad")}
+                    onOpenHistory={() => setActiveTab("history")}
                     onRefresh={loadSetupStatus}
-                    onStartRecording={handleStartRecording}
                   />
                 )}
                 {activeTab === "history" && (
@@ -1607,18 +2014,21 @@ function MainApp() {
                 )}
                 {activeTab === "notepad" && <NotepadPanel />}
                 {activeTab === "settings" && config && (
-                  <Settings
-                    config={config}
-                    onSave={handleSaveSettings}
-                    onCancel={() => {
-                      setAppearancePreview(null);
-                      setActiveTab("dictate");
-                    }}
-                    onPreviewAppearance={setAppearancePreview}
-                    shortcutError={shortcutError}
-                    setupStatus={setupStatus}
-                    onRefreshSetup={loadSetupStatus}
-                  />
+                  <Suspense fallback={<SettingsFallback />}>
+                    <Settings
+                      config={config}
+                      onSave={handleSaveSettings}
+                      onCancel={() => {
+                        setAppearancePreview(null);
+                        setActiveTab("dictate");
+                      }}
+                      onPreviewAppearance={setAppearancePreview}
+                      shortcutError={shortcutError}
+                      setupStatus={setupStatus}
+                      onRefreshSetup={loadSetupStatus}
+                      onOpenOnboarding={() => setActiveTab("onboarding")}
+                    />
+                  </Suspense>
                 )}
               </motion.div>
             </AnimatePresence>
@@ -1653,6 +2063,728 @@ function NavButton({
   );
 }
 
+function OnboardingPanel({
+  config,
+  errorMsg,
+  platform,
+  setupStatus,
+  shortcutError,
+  firstDictationPassed,
+  firstDictationState,
+  firstDictationMessage,
+  onAction,
+  onChooseLocalModel,
+  onChooseProvider,
+  onComplete,
+  onRefresh,
+  onSaveGroqKey,
+  onSaveInputDevice,
+  onSaveShortcut,
+  onStartFirstDictation,
+  onStopFirstDictation,
+}: {
+  config: AppConfig;
+  errorMsg: string;
+  platform: DesktopPlatform;
+  setupStatus: SetupStatus | null;
+  shortcutError: string;
+  firstDictationPassed: boolean;
+  firstDictationState: "idle" | "recording" | "processing" | "success" | "error";
+  firstDictationMessage: string;
+  onAction: (check: SetupCheck) => void;
+  onChooseLocalModel: (localModelSize: AppConfig["local_model_size"]) => Promise<void>;
+  onChooseProvider: (provider: AppConfig["model_provider"]) => Promise<void>;
+  onComplete: () => void;
+  onRefresh: () => Promise<SetupStatus | null>;
+  onSaveGroqKey: (groqApiKey: string) => Promise<string>;
+  onSaveInputDevice: (inputDevice: string | null) => Promise<void>;
+  onSaveShortcut: (shortcut: string) => Promise<boolean>;
+  onStartFirstDictation: () => void;
+  onStopFirstDictation: () => void;
+}) {
+  type OnboardingStep = "welcome" | "engine" | "engineSetup" | "hotkey" | "microphone" | "paste" | "dictation";
+  const steps: Array<{ id: OnboardingStep; label: string }> = [
+    { id: "welcome", label: "Welcome" },
+    { id: "engine", label: "Engine" },
+    { id: "engineSetup", label: "Setup" },
+    { id: "hotkey", label: "Hotkey" },
+    { id: "microphone", label: "Mic" },
+    { id: "paste", label: "Paste" },
+    { id: "dictation", label: "Try" },
+  ];
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [shortcutDraft, setShortcutDraft] = useState(config.shortcut);
+  const [shortcutMessage, setShortcutMessage] = useState("Focus the field and press any key or key combo.");
+  const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [groqKey, setGroqKey] = useState(config.groq_api_key);
+  const [groqTest, setGroqTest] = useState<{ message: string; status: "idle" | "testing" | "success" | "error" | "warning" }>({
+    message: "",
+    status: "idle",
+  });
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [modelProgress, setModelProgress] = useState<DownloadProgress | null>(null);
+  const [modelError, setModelError] = useState("");
+  const [modelVerifying, setModelVerifying] = useState(false);
+  const [devices, setDevices] = useState<string[]>([]);
+  const [micDevice, setMicDevice] = useState(config.input_device ?? "");
+  const [micTestState, setMicTestState] = useState<"idle" | "testing" | "success" | "fail">("idle");
+  const [micLevel, setMicLevel] = useState(0);
+  const ready = setupStatus?.ready ?? false;
+  const currentStep = steps[currentIndex];
+  const providerCheck = setupStatus?.checks.find((check) => check.id === "provider");
+  const microphoneCheck = setupStatus?.checks.find((check) => check.id === "microphone");
+  const pasteCheck = setupStatus?.checks.find((check) => check.id === "paste");
+
+  useEffect(() => {
+    setShortcutDraft(config.shortcut);
+  }, [config.shortcut]);
+
+  useEffect(() => {
+    setGroqKey(config.groq_api_key);
+  }, [config.groq_api_key]);
+
+  useEffect(() => {
+    setMicDevice(config.input_device ?? "");
+  }, [config.input_device]);
+
+  useEffect(() => {
+    if (!HAS_TAURI) {
+      setDevices(["Built-in Microphone", "Studio Display Microphone"]);
+      return;
+    }
+
+    invoke<string[]>("list_audio_devices")
+      .then(setDevices)
+      .catch(() => setDevices([]));
+  }, []);
+
+  const checkSelectedModelStatus = useCallback(async () => {
+    const modelSize = config.local_model_size;
+    if (!HAS_TAURI) {
+      const previewStatus = {
+        downloaded: modelSize === "small",
+        downloading: false,
+        file_size_bytes: modelSize === "small" ? 487_601_967 : 0,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: modelSize === "small",
+        integrity_error: null,
+        model_size: modelSize,
+      };
+      setModelStatus(previewStatus);
+      return previewStatus;
+    }
+
+    try {
+      const status = await invoke<ModelStatus>("check_model_status", { modelSize });
+      setModelStatus(status);
+      return status;
+    } catch (e) {
+      setModelError(formatErrorMessage(e));
+      return null;
+    }
+  }, [config.local_model_size]);
+
+  useEffect(() => {
+    if (config.model_provider === "local") {
+      void checkSelectedModelStatus();
+    }
+  }, [checkSelectedModelStatus, config.model_provider]);
+
+  useEffect(() => {
+    if (!modelStatus?.downloading) {
+      setModelProgress(null);
+      return;
+    }
+
+    const interval = window.setInterval(async () => {
+      try {
+        const progress = await invoke<DownloadProgress>("get_model_download_progress");
+        setModelProgress(progress);
+        if (progress.percentage >= 100) {
+          window.clearInterval(interval);
+          await checkSelectedModelStatus();
+          await onRefresh();
+        }
+      } catch {
+        /* transient progress read failure */
+      }
+    }, 400);
+
+    return () => window.clearInterval(interval);
+  }, [checkSelectedModelStatus, modelStatus?.downloading, onRefresh]);
+
+  const goNext = () => setCurrentIndex((index) => Math.min(index + 1, steps.length - 1));
+  const goBack = () => setCurrentIndex((index) => Math.max(index - 1, 0));
+
+  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const accelerator = acceleratorFromKeyboardEvent(event);
+    if (!accelerator) {
+      setShortcutMessage("Press one final key to complete the shortcut.");
+      return;
+    }
+
+    setShortcutDraft(accelerator);
+    setShortcutSaving(true);
+    setShortcutMessage(`Captured ${accelerator}. Checking whether the system can use it...`);
+    void onSaveShortcut(accelerator)
+      .then((ok) => {
+        setShortcutMessage(
+          ok
+            ? `${accelerator} is saved.`
+            : `Echo saved ${accelerator}, but the system rejected it. Choose another key.`
+        );
+      })
+      .catch((e) => setShortcutMessage(formatErrorMessage(e)))
+      .finally(() => setShortcutSaving(false));
+  };
+
+  const handleTestGroq = async () => {
+    const trimmedKey = groqKey.trim();
+    if (!trimmedKey) {
+      setGroqTest({ message: "Enter a Groq API key before testing Cloud transcription.", status: "error" });
+      return;
+    }
+    if (!trimmedKey.startsWith("gsk_")) {
+      setGroqTest({ message: "Groq API keys usually start with gsk_. Check the key and try again.", status: "error" });
+      return;
+    }
+
+    setGroqTest({ message: "Saving securely and testing Groq...", status: "testing" });
+    try {
+      const secureMessage = await onSaveGroqKey(trimmedKey);
+      const readiness = HAS_TAURI
+        ? await invoke<GroqReadiness>("test_groq_connection", {
+            config: { ...config, model_provider: "api", groq_api_key: trimmedKey },
+          })
+        : {
+            ok: true,
+            message: "Groq connection looks good in preview mode.",
+            transcription_model_ok: true,
+            cleanup_model_ok: true,
+          };
+      setGroqTest({
+        message: [secureMessage, readiness.message].filter(Boolean).join(" ") || "Cloud transcription is ready.",
+        status: readiness.ok ? "success" : "warning",
+      });
+      await onRefresh();
+    } catch (e) {
+      setGroqTest({ message: formatErrorMessage(e), status: "error" });
+    }
+  };
+
+  const handleDownloadSelectedModel = async () => {
+    const modelSize = config.local_model_size;
+    setModelError("");
+    if (!HAS_TAURI) {
+      setModelStatus({
+        downloaded: true,
+        downloading: false,
+        file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: true,
+        integrity_error: null,
+        model_size: modelSize,
+      });
+      await onRefresh();
+      return;
+    }
+
+    setModelStatus((prev) =>
+      prev
+        ? { ...prev, downloading: true }
+        : {
+            downloaded: false,
+            downloading: true,
+            file_size_bytes: 0,
+            expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+            integrity_checked: false,
+            integrity_error: null,
+            model_size: modelSize,
+          }
+    );
+    try {
+      await invoke("download_whisper_model", { modelSize });
+      await checkSelectedModelStatus();
+      await onRefresh();
+    } catch (e) {
+      setModelError(formatErrorMessage(e));
+      await checkSelectedModelStatus();
+    }
+  };
+
+  const handleVerifySelectedModel = async () => {
+    const modelSize = config.local_model_size;
+    setModelError("");
+    setModelVerifying(true);
+    try {
+      const status = HAS_TAURI
+        ? await invoke<ModelStatus>("verify_model_status", { modelSize })
+        : {
+            downloaded: true,
+            downloading: false,
+            file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+            expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+            integrity_checked: true,
+            integrity_error: null,
+            model_size: modelSize,
+          };
+      setModelStatus(status);
+      if (status.integrity_error) setModelError(status.integrity_error);
+      await onRefresh();
+    } catch (e) {
+      setModelError(formatErrorMessage(e));
+    } finally {
+      setModelVerifying(false);
+    }
+  };
+
+  const handleRemoveSelectedModel = async () => {
+    const modelSize = config.local_model_size;
+    setModelError("");
+    if (!HAS_TAURI) {
+      setModelStatus({
+        downloaded: false,
+        downloading: false,
+        file_size_bytes: 0,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: false,
+        integrity_error: null,
+        model_size: modelSize,
+      });
+      await onRefresh();
+      return;
+    }
+
+    try {
+      await invoke("delete_whisper_model", { modelSize });
+      await checkSelectedModelStatus();
+      await onRefresh();
+    } catch (e) {
+      setModelError(formatErrorMessage(e));
+    }
+  };
+
+  const handleMicDeviceChange = async (value: string) => {
+    setMicDevice(value);
+    await onSaveInputDevice(value || null);
+    await onRefresh();
+  };
+
+  const handleTestMic = async () => {
+    setMicTestState("testing");
+    setMicLevel(0);
+    if (!HAS_TAURI) {
+      window.setTimeout(() => {
+        setMicLevel(0.72);
+        setMicTestState("success");
+      }, 500);
+      return;
+    }
+
+    try {
+      const peak = await invoke<number>("test_microphone", { deviceName: micDevice || null });
+      setMicLevel(peak);
+      setMicTestState(peak > 0.01 ? "success" : "fail");
+      await onRefresh();
+    } catch {
+      setMicTestState("fail");
+    }
+  };
+
+  const renderStep = () => {
+    if (currentStep.id === "welcome") {
+      return (
+        <>
+          <Chip tone="accent">Step 1 of {steps.length}</Chip>
+          <h3>Get Echo ready</h3>
+          <p>
+            You will choose a transcription engine, pick the hotkey that starts dictation, clear the
+            setup checks, then try one dictation.
+          </p>
+          <div className="onboarding-summary-grid">
+            <span><Sparkles size={15} /> Transcription engine</span>
+            <span><Keyboard size={15} /> Hotkey</span>
+            <span><Mic size={15} /> Mic and paste</span>
+          </div>
+        </>
+      );
+    }
+
+    if (currentStep.id === "engine") {
+      return (
+        <>
+          <Chip tone="accent">Step 2 of {steps.length}</Chip>
+          <h3>Transcription Engine</h3>
+          <p>
+            Use Cloud for the fastest setup, or download a local Whisper model for offline
+            transcription on this computer.
+          </p>
+          <div className="onboarding-provider-grid">
+            <button
+              className={`onboarding-provider${config.model_provider === "api" ? " is-active" : ""}`}
+              onClick={() => void onChooseProvider("api")}
+              type="button"
+            >
+              <Cloud size={18} />
+              <strong>Cloud</strong>
+              <span>Fast online transcription with a Groq API key saved in secure storage.</span>
+            </button>
+            <button
+              className={`onboarding-provider${config.model_provider === "local" ? " is-active" : ""}`}
+              onClick={() => void onChooseProvider("local")}
+              type="button"
+            >
+              <Cpu size={18} />
+              <strong>Download Local</strong>
+              <span>Offline Whisper transcription after downloading a model.</span>
+            </button>
+          </div>
+        </>
+      );
+    }
+
+    if (currentStep.id === "engineSetup") {
+      if (config.model_provider === "api") {
+        return (
+          <>
+            <Chip tone="accent">Step 3 of {steps.length}</Chip>
+            <h3>Cloud Setup</h3>
+            <p>Enter your Groq API key. Echo saves it in secure OS storage and tests model access.</p>
+            <label className="onboarding-hotkey-field">
+              <span>Groq API Key</span>
+              <input
+                className={`ui-input${groqTest.status === "error" ? " ui-input--error" : ""}`}
+                onChange={(event) => setGroqKey(event.target.value)}
+                placeholder="gsk_..."
+                type="password"
+                value={groqKey}
+              />
+            </label>
+            <Button
+              disabled={groqTest.status === "testing"}
+              fullWidth
+              icon={<RefreshCw size={16} />}
+              onClick={() => void handleTestGroq()}
+              variant="primary"
+            >
+              {groqTest.status === "testing" ? "Testing Cloud" : "Save and Test Cloud"}
+            </Button>
+            {groqTest.message && (
+              <Alert tone={groqTest.status === "success" ? "success" : groqTest.status === "warning" ? "warning" : "error"}>
+                {groqTest.message}
+              </Alert>
+            )}
+            {providerCheck && providerCheck.status !== "ok" && (
+              <Alert tone="warning">{providerCheck.message}</Alert>
+            )}
+          </>
+        );
+      }
+
+      const expectedSize =
+        modelStatus?.expected_size_bytes || (config.local_model_size === "small" ? 487_601_967 : 1_533_763_059);
+      return (
+        <>
+          <Chip tone="accent">Step 3 of {steps.length}</Chip>
+          <h3>Download Local Model</h3>
+          <p>Choose a Whisper model to keep transcription offline after download.</p>
+          <div className="onboarding-model-choice" role="group" aria-label="Local model size">
+            {(["small", "medium"] as const).map((modelSize) => (
+              <button
+                className={config.local_model_size === modelSize ? "is-active" : ""}
+                key={modelSize}
+                onClick={() => void onChooseLocalModel(modelSize)}
+                type="button"
+              >
+                <strong>{modelSize === "small" ? "Small" : "Medium"}</strong>
+                <span>{modelSize === "small" ? "Faster, smaller download" : "More accurate, larger download"}</span>
+              </button>
+            ))}
+          </div>
+          <div className="onboarding-status-card">
+            <strong>Whisper {config.local_model_size}</strong>
+            <span>
+              {modelStatus?.downloaded
+                ? `Ready on disk (${formatBytes(modelStatus.file_size_bytes)})`
+                : `${formatBytes(expectedSize)} download required`}
+            </span>
+          </div>
+          {modelStatus?.downloading && (
+            <div className="download-progress">
+              <Progress value={modelProgress?.percentage} />
+              <span>
+                {modelProgress
+                  ? `${formatBytes(modelProgress.bytes_downloaded)} / ${formatBytes(modelProgress.total_bytes || expectedSize)}`
+                  : "Starting download..."}
+              </span>
+            </div>
+          )}
+          <div className="onboarding-inline-actions">
+            {!modelStatus?.downloaded && (
+              <Button
+                disabled={!!modelStatus?.downloading}
+                onClick={() => void handleDownloadSelectedModel()}
+                variant="primary"
+              >
+                {modelStatus?.downloading ? "Downloading" : "Download Model"}
+              </Button>
+            )}
+            {modelStatus?.downloaded && !modelStatus.integrity_checked && (
+              <Button disabled={modelVerifying} onClick={() => void handleVerifySelectedModel()} variant="secondary">
+                {modelVerifying ? "Verifying" : "Verify Model"}
+              </Button>
+            )}
+            {modelStatus?.downloaded && (
+              <Button onClick={() => void handleRemoveSelectedModel()} variant="secondary">
+                Remove
+              </Button>
+            )}
+          </div>
+          {providerCheck?.status === "ok" && <Alert tone="success">{providerCheck.message}</Alert>}
+          {(modelError || providerCheck?.status === "error") && (
+            <Alert tone="error">{modelError || providerCheck?.message}</Alert>
+          )}
+        </>
+      );
+    }
+
+    if (currentStep.id === "hotkey") {
+      return (
+        <>
+          <Chip tone="accent">Step 4 of {steps.length}</Chip>
+          <h3>Choose Hotkey</h3>
+          <p>
+            Press the single key or key combo you want Echo to use globally. Some choices may be
+            reserved by the system; Echo will tell you if registration fails.
+          </p>
+          <label className="onboarding-hotkey-field">
+            <span>Hotkey</span>
+            <input
+              className={`ui-input${shortcutError ? " ui-input--error" : ""}`}
+              onFocus={() => setShortcutMessage("Press any key or key combo. Escape can be captured here.")}
+              onKeyDown={handleShortcutKeyDown}
+              readOnly
+              value={shortcutDraft}
+            />
+          </label>
+          <Alert tone={shortcutError ? "error" : shortcutSaving ? "info" : "success"}>
+            {shortcutError || shortcutMessage}
+          </Alert>
+        </>
+      );
+    }
+
+    if (currentStep.id === "microphone") {
+      return (
+        <>
+          <div className="onboarding-card__header">
+            <div>
+              <Chip tone="accent">Step 5 of {steps.length}</Chip>
+              <h3>Microphone Setup</h3>
+            </div>
+            <IconButton label="Refresh setup checks" onClick={() => void onRefresh()}>
+              <RefreshCw size={16} />
+            </IconButton>
+          </div>
+          <p>Choose the microphone Echo should listen to, then run a quick level test.</p>
+          <label className="onboarding-hotkey-field">
+            <span>Input Device</span>
+            <select
+              className="ui-select"
+              onChange={(event) => void handleMicDeviceChange(event.target.value)}
+              value={micDevice}
+            >
+              <option value="">System Default</option>
+              {devices.map((device) => (
+                <option key={device} value={device}>
+                  {device}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="onboarding-inline-actions">
+            <Button icon={<Mic size={16} />} onClick={() => void handleTestMic()} variant="primary">
+              {micTestState === "testing" ? "Listening" : "Test Microphone"}
+            </Button>
+            {microphoneCheck?.action_label && (
+              <Button onClick={() => onAction(microphoneCheck)} variant="secondary">
+                {microphoneCheck.action_label}
+              </Button>
+            )}
+          </div>
+          {(micTestState === "testing" || micTestState === "success") && (
+            <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
+          )}
+          <Alert tone={micTestState === "fail" ? "error" : microphoneCheck?.status === "ok" || micTestState === "success" ? "success" : "warning"}>
+            {micTestState === "success"
+              ? "Microphone is working."
+              : micTestState === "fail"
+                ? "No audio detected. Check the selected device and system microphone permission."
+                : microphoneCheck?.message || "Run the microphone test before continuing."}
+          </Alert>
+        </>
+      );
+    }
+
+    if (currentStep.id === "paste") {
+      return (
+        <>
+          <Chip tone="accent">Step 6 of {steps.length}</Chip>
+          <h3>{platform === "macos" ? "Paste Permission" : "Paste Readiness"}</h3>
+          <p>
+            {platform === "macos"
+              ? "Echo needs Accessibility permission to paste automatically. If permission is blocked, it will copy the transcript instead."
+              : "On Windows, Echo uses clipboard write and paste simulation where available, with copy fallback if paste cannot complete."}
+          </p>
+          <div className="onboarding-status-card">
+            <strong>{pasteCheck?.label ?? "Paste readiness"}</strong>
+            <span>{pasteCheck?.message ?? "Refresh setup checks to confirm paste readiness."}</span>
+          </div>
+          <div className="onboarding-inline-actions">
+            {platform === "macos" && (
+              <Button onClick={() => pasteCheck && onAction(pasteCheck)} variant="primary">
+                Open Accessibility
+              </Button>
+            )}
+            <Button onClick={() => void onRefresh()} variant="secondary">
+              Refresh Checks
+            </Button>
+          </div>
+          <Alert tone={pasteCheck?.status === "ok" ? "success" : platform === "macos" ? "warning" : "info"}>
+            {platform === "macos"
+              ? "When Accessibility is unavailable, Echo keeps the transcript safe on the clipboard."
+              : "No macOS Accessibility permission is needed on Windows."}
+          </Alert>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <Chip tone="accent">Step 7 of {steps.length}</Chip>
+        <h3>Try your first dictation</h3>
+        <p>
+          Focus a text field in another app, come back here if needed, then start recording. Echo
+          will paste into the target or copy the transcript if paste is unavailable.
+        </p>
+        {firstDictationState === "recording" ? (
+          <Button fullWidth icon={<Square size={16} />} onClick={onStopFirstDictation} variant="primary">
+            Stop Test
+          </Button>
+        ) : (
+          <Button
+            disabled={!ready || !!shortcutError || firstDictationState === "processing"}
+            fullWidth
+            icon={<Mic size={16} />}
+            onClick={onStartFirstDictation}
+            variant="primary"
+          >
+            {firstDictationState === "processing" ? "Processing" : "Start Test Dictation"}
+          </Button>
+        )}
+        {firstDictationMessage && (
+          <Alert tone={firstDictationState === "success" ? "success" : firstDictationState === "error" ? "error" : "info"}>
+            {firstDictationMessage}
+          </Alert>
+        )}
+        {(!ready || shortcutError || !firstDictationPassed) && (
+          <Alert tone="warning">
+            Complete setup and pass the first dictation test before opening Echo.
+          </Alert>
+        )}
+        {errorMsg && <Alert tone="error">{errorMsg}</Alert>}
+      </>
+    );
+  };
+
+  return (
+    <section className="onboarding-panel" aria-label="Echo onboarding">
+      <div className="page-heading page-heading--split">
+        <div>
+          <p>First-run setup</p>
+          <h2>{currentStep.label}</h2>
+          <span>Step {currentIndex + 1} of {steps.length}</span>
+        </div>
+        <Chip tone={ready ? "success" : "warning"}>{ready ? "Ready" : "Needs setup"}</Chip>
+      </div>
+
+      <div className="onboarding-progress" aria-label="Onboarding steps">
+        {steps.map((step, index) => (
+          <button
+            aria-current={index === currentIndex ? "step" : undefined}
+            className={index === currentIndex ? "is-active" : ""}
+            key={step.id}
+            onClick={() => setCurrentIndex(index)}
+            type="button"
+          >
+            <span>{index + 1}</span>
+            <strong>{step.label}</strong>
+          </button>
+        ))}
+      </div>
+
+      <div className="onboarding-carousel">
+        <Card className="onboarding-card onboarding-card--carousel">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={currentStep.id}
+              className="onboarding-step"
+              initial={{ opacity: 0, x: 16 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              transition={PANEL_TRANSITION}
+            >
+              {renderStep()}
+            </motion.div>
+          </AnimatePresence>
+        </Card>
+      </div>
+
+      <div className="onboarding-actions">
+        <Button disabled={currentIndex === 0} onClick={goBack} variant="secondary">
+          Back
+        </Button>
+        <Button
+          disabled={currentIndex === steps.length - 1 && (!ready || !!shortcutError || !firstDictationPassed)}
+          onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
+          variant="primary"
+        >
+          {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function OnboardingSuccess({ reduceMotion }: { reduceMotion: boolean }) {
+  return (
+    <motion.div
+      className="onboarding-success"
+      initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 1.02 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
+      role="status"
+      aria-live="polite"
+    >
+      <motion.div
+        className="onboarding-success__mark"
+        initial={reduceMotion ? false : { scale: 0.72, rotate: -8 }}
+        animate={reduceMotion ? undefined : { scale: 1, rotate: 0 }}
+        transition={reduceMotion ? undefined : { type: "spring", stiffness: 520, damping: 28 }}
+        aria-hidden
+      >
+        <CheckCircle2 size={52} />
+      </motion.div>
+      <h2>Echo is ready</h2>
+      <p>Setup is complete. Opening your dictation workspace.</p>
+    </motion.div>
+  );
+}
+
 function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
   const nextMilestone = stats.next_milestone;
   const progress = Math.round(Math.min(Math.max(stats.next_milestone_progress, 0), 1) * 100);
@@ -1671,7 +2803,7 @@ function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
         </div>
       </article>
 
-      <article className="stats-tile">
+      <article className="stats-tile stats-tile--wpm">
         <span className="stats-tile__icon" aria-hidden>
           <Gauge size={16} />
         </span>
@@ -1681,7 +2813,7 @@ function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
         </div>
       </article>
 
-      <article className="stats-tile">
+      <article className="stats-tile stats-tile--streak">
         <span className="stats-tile__icon" aria-hidden>
           <Flame size={16} />
         </span>
@@ -1721,6 +2853,42 @@ function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
   );
 }
 
+const SHORTCUT_KEY_SYMBOLS: Record<string, string> = {
+  command: "\u2318",
+  cmd: "\u2318",
+  super: "\u2318",
+  meta: "\u2318",
+  control: "\u2303",
+  ctrl: "\u2303",
+  option: "\u2325",
+  alt: "\u2325",
+  shift: "\u21e7",
+  enter: "\u23ce",
+  return: "\u23ce",
+  space: "Space",
+  tab: "\u21e5",
+  escape: "Esc",
+  esc: "Esc",
+};
+
+function ShortcutKeys({ shortcut }: { shortcut: string }) {
+  const keys = shortcut
+    .split(/\s*\+\s*/)
+    .map((key) => key.trim())
+    .filter(Boolean)
+    .map((key) => SHORTCUT_KEY_SYMBOLS[key.toLowerCase()] ?? key);
+
+  return (
+    <span className="shortcut-keys" aria-label={`Shortcut ${shortcut}`}>
+      {keys.map((key, index) => (
+        <kbd className="shortcut-key" key={`${key}-${index}`}>
+          {key}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
 function DictatePanel({
   appState,
   config,
@@ -1733,8 +2901,9 @@ function DictatePanel({
   onAction,
   onDismissMilestone,
   onOpenSettings,
+  onOpenNotepad,
+  onOpenHistory,
   onRefresh,
-  onStartRecording,
 }: {
   appState: AppState;
   config: AppConfig | null;
@@ -1747,38 +2916,76 @@ function DictatePanel({
   onAction: (check: SetupCheck) => void;
   onDismissMilestone: () => void;
   onOpenSettings: () => void;
+  onOpenNotepad: () => void;
+  onOpenHistory: () => void;
   onRefresh: () => Promise<SetupStatus | null>;
-  onStartRecording: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
+  const needsSetup = Boolean(setupStatus && !setupStatus.ready);
 
   return (
     <div className="dictate-panel">
-      <div className="page-heading page-heading--split page-heading--workspace">
-        <div>
-          <p>Dictate</p>
-          <h2>{stateTitle(appState)}</h2>
-          <span>{stateHint(appState, config?.shortcut, errorMsg)}</span>
+      <motion.section
+        key={appState}
+        className={`dictate-hero dictate-hero--${appState}`}
+        initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+      >
+        <span className="dictate-hero__glow" aria-hidden />
+        <div className="dictate-hero__mark">
+          <StateGlyph state={appState} />
         </div>
+        <h2 className="dictate-hero__title">{stateTitle(appState)}</h2>
+        <p className="dictate-hero__hint">{stateHint(appState, config?.shortcut, errorMsg)}</p>
+
         {appState === "idle" && (
-          <Button
-            size="md"
-            variant="primary"
-            icon={<AudioWaveform size={16} />}
-            onClick={onStartRecording}
-          >
-            Start
-          </Button>
+          <div className="dictate-hero__meta">
+            <ShortcutKeys shortcut={config?.shortcut ?? "Command + D"} />
+            <Chip icon={<Sparkles size={14} />}>{cleanupChipLabel(config)}</Chip>
+          </div>
         )}
+
         {appState === "recording" && (
           <div className="recording-note" role="status">
             <CircleDot size={14} />
             Listening
           </div>
         )}
-      </div>
 
-      <StatsBentoDashboard stats={stats} />
+        {appState === "processing" && (
+          <div className="dictate-hero__progress">
+            <Progress />
+          </div>
+        )}
+
+        {appState === "idle" && config?.model_provider === "local" && (
+          <div className="transcript-preview transcript-preview--hint">
+            <strong>Local preview</strong>
+            <p>
+              Whisper runs on this device and returns the raw transcript. Cloud cleanup is skipped in
+              local mode, so wording stays closer to what you said.
+            </p>
+          </div>
+        )}
+
+        {(appState === "success" || appState === "copied") && transcript && (
+          <motion.div
+            className="transcript-preview"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+          >
+            <p>{transcript}</p>
+          </motion.div>
+        )}
+
+        {appState === "idle" && errorMsg && <Alert tone="warning">{errorMsg}</Alert>}
+        {(appState === "success" || appState === "copied") && errorMsg && (
+          <Alert tone="warning">{errorMsg}</Alert>
+        )}
+        {appState === "error" && errorMsg && <Alert tone="error">{errorMsg}</Alert>}
+      </motion.section>
 
       <AnimatePresence>
         {milestoneCelebration && (
@@ -1805,52 +3012,43 @@ function DictatePanel({
         )}
       </AnimatePresence>
 
-      <motion.section
-        key={appState}
-        className={`ui-card command-surface command-surface--dictate command-surface--${appState}`}
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-      >
-        <div className="command-surface__stack">
-          <div className="dictation-status-row">
-            <StateGlyph state={appState} />
-            <div>
-              <strong>{statusLabel(appState)}</strong>
-              <span>{statusDetail(appState, config?.shortcut, errorMsg)}</span>
-            </div>
-          </div>
+      <div className="insights-block">
+        <p className="section-label">Your insights</p>
+        <StatsBentoDashboard stats={stats} />
+      </div>
 
-          {(appState === "idle" || appState === "recording") && (
-            <div className="command-chips">
-              <Chip icon={<Mic size={14} />}>{config?.shortcut ?? "Command + D"}</Chip>
-              <Chip icon={<Sparkles size={14} />}>
-                {config?.cleanup_enabled ? "Cleanup on" : "Raw transcript"}
-              </Chip>
-            </div>
-          )}
+      <nav className="quick-actions" aria-label="Quick actions">
+        <button className="quick-tile" type="button" onClick={onOpenNotepad}>
+          <span className="quick-tile__icon">
+            <FileText size={18} />
+          </span>
+          <span className="quick-tile__title">Notepad</span>
+          <span className="quick-tile__desc">Dictate into a longform note</span>
+        </button>
+        <button className="quick-tile" type="button" onClick={onOpenHistory}>
+          <span className="quick-tile__icon">
+            <History size={18} />
+          </span>
+          <span className="quick-tile__title">History</span>
+          <span className="quick-tile__desc">Revisit and copy past transcripts</span>
+        </button>
+        <button className="quick-tile" type="button" onClick={() => void onRefresh()}>
+          <span className="quick-tile__icon">
+            <RefreshCw size={18} />
+          </span>
+          <span className="quick-tile__title">Check setup</span>
+          <span className="quick-tile__desc">Re-run readiness checks</span>
+        </button>
+        <button className="quick-tile" type="button" onClick={onOpenSettings}>
+          <span className="quick-tile__icon">
+            <SettingsIcon size={18} />
+          </span>
+          <span className="quick-tile__title">Settings</span>
+          <span className="quick-tile__desc">Provider, shortcut, and more</span>
+        </button>
+      </nav>
 
-          {(appState === "success" || appState === "copied") && transcript && (
-            <motion.div
-              className="transcript-preview"
-              initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-            >
-              <p>{transcript}</p>
-            </motion.div>
-          )}
-
-          {appState === "processing" && <Progress />}
-          {appState === "idle" && errorMsg && <Alert tone="warning">{errorMsg}</Alert>}
-          {(appState === "success" || appState === "copied") && errorMsg && (
-            <Alert tone="warning">{errorMsg}</Alert>
-          )}
-          {appState === "error" && errorMsg && <Alert tone="error">{errorMsg}</Alert>}
-        </div>
-      </motion.section>
-
-      {setupStatus && (
+      {needsSetup && setupStatus && (
         <SetupPanel
           status={setupStatus}
           shortcutError={shortcutError}
@@ -1914,28 +3112,9 @@ function StateGlyph({ state }: { state: AppState }) {
   );
 }
 
-function statusLabel(state: AppState): string {
-  const labels: Record<AppState, string> = {
-    idle: "Ready",
-    recording: "Listening",
-    processing: "Transcribing",
-    success: "Pasted",
-    copied: "Copied",
-    error: "Needs attention",
-  };
-  return labels[state];
-}
-
-function statusDetail(state: AppState, shortcut = "Command + D", errorMsg = ""): string {
-  const labels: Record<AppState, string> = {
-    idle: errorMsg || `Use ${shortcut}, the menu, or the Start button.`,
-    recording: "Release the shortcut or use Stop Recording from the menu.",
-    processing: "Cleaning up your dictation and preparing the paste.",
-    success: errorMsg || "Inserted in the previously focused app.",
-    copied: errorMsg || "The transcript is on the clipboard.",
-    error: errorMsg || "Review setup and try again.",
-  };
-  return labels[state];
+function cleanupChipLabel(config?: AppConfig | null): string {
+  if (config?.model_provider === "local") return "Raw local transcript";
+  return config?.cleanup_enabled ? "Groq cleanup on" : "Raw transcript";
 }
 
 function stateTitle(state: AppState): string {
@@ -1952,7 +3131,7 @@ function stateTitle(state: AppState): string {
 
 function stateHint(state: AppState, shortcut = "Command + D", errorMsg = ""): string {
   const labels: Record<AppState, string> = {
-    idle: `Press ${shortcut} or start manually`,
+    idle: `Press ${shortcut} anywhere to start dictating`,
     recording: "Release the shortcut to stop",
     processing: "Transcribing and polishing your text",
     success: "Inserted into the target app",
@@ -1993,9 +3172,11 @@ function SetupPanel({
       </div>
 
       <div className="readiness-strip" aria-label="Readiness checks">
-        {status.checks.map((check) => (
+        {status.checks.map((check) => {
+          const tone = check.id === "paste" ? "info" : check.status;
+          return (
           <motion.button
-            className={`readiness-pill readiness-pill--${check.status}`}
+            className={`readiness-pill readiness-pill--${tone}`}
             key={check.id}
             onClick={() => check.status !== "ok" && onAction(check)}
             type="button"
@@ -2008,14 +3189,17 @@ function SetupPanel({
             <CircleDot size={12} />
             <span>{check.label}</span>
           </motion.button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="setup-list">
-        {blockers.map((check) => (
+        {blockers.map((check) => {
+          const tone = check.id === "paste" ? "info" : check.status;
+          return (
           <motion.div
             key={check.id}
-            className={`setup-check setup-check--${check.status}`}
+            className={`setup-check setup-check--${tone}`}
             initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
@@ -2031,7 +3215,8 @@ function SetupPanel({
               </Button>
             )}
           </motion.div>
-        ))}
+          );
+        })}
       </div>
 
       {!status.ready && (
@@ -2362,7 +3547,7 @@ function NotepadPanel() {
       setDictationState("idle");
     } catch (e) {
       const msg = formatErrorMessage(e);
-      setError(msg === NO_SPEECH_DETECTED ? "No speech detected. Try again when you are ready." : msg);
+      setError(msg === NO_SPEECH_DETECTED || errorCode(e) === "empty_speech" ? "No speech detected. Try again when you are ready." : msg);
       emit("indicator-mode", { mode: "error" }).catch(() => {});
       setDictationState("idle");
     } finally {
@@ -2499,7 +3684,7 @@ function NotepadPanel() {
               ) : (
                 <div className="notepad-markdown">
                   {selectedNote.body.trim() ? (
-                    <ReactMarkdown
+                    <MarkdownPreview
                       components={{
                         a: ({ children, ...props }) => (
                           <a {...props} target="_blank" rel="noreferrer">
@@ -2509,7 +3694,7 @@ function NotepadPanel() {
                       }}
                     >
                       {selectedNote.body}
-                    </ReactMarkdown>
+                    </MarkdownPreview>
                   ) : (
                     <p className="notepad-markdown__empty">Nothing to preview yet.</p>
                   )}
@@ -2546,6 +3731,28 @@ function HistoryPanel({
   onDelete: (id: string) => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
+  const [clearConfirming, setClearConfirming] = useState(false);
+
+  useEffect(() => {
+    if (!clearConfirming) return;
+    const timeout = window.setTimeout(() => setClearConfirming(false), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [clearConfirming]);
+
+  useEffect(() => {
+    if (history.length === 0) {
+      setClearConfirming(false);
+    }
+  }, [history.length]);
+
+  const handleClearClick = () => {
+    if (!clearConfirming) {
+      setClearConfirming(true);
+      return;
+    }
+    setClearConfirming(false);
+    onClear();
+  };
 
   return (
     <div className="history-panel">
@@ -2556,11 +3763,29 @@ function HistoryPanel({
           <span>Saved transcripts stay on this device.</span>
         </div>
         {history.length > 0 && (
-          <Button variant="secondary" onClick={onClear}>
-            Clear All
+          <Button variant={clearConfirming ? "danger" : "secondary"} onClick={handleClearClick}>
+            {clearConfirming ? "Confirm Clear" : "Clear All"}
           </Button>
         )}
       </div>
+
+      <AnimatePresence initial={false}>
+        {clearConfirming && (
+          <motion.div
+            className="history-clear-confirm ui-card"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+            role="status"
+          >
+            <p>Clear all saved transcripts from this device? This cannot be undone.</p>
+            <Button variant="secondary" size="sm" onClick={() => setClearConfirming(false)}>
+              Cancel
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {history.length === 0 ? (
         <motion.div
@@ -2923,7 +4148,7 @@ function StandaloneNotepadWindow() {
       setDictationState("idle");
     } catch (e) {
       const msg = formatErrorMessage(e);
-      setError(msg === NO_SPEECH_DETECTED ? "No speech detected. Try again when you are ready." : msg);
+      setError(msg === NO_SPEECH_DETECTED || errorCode(e) === "empty_speech" ? "No speech detected. Try again when you are ready." : msg);
       emitIndicatorMode("error").catch(() => {});
       setDictationState("idle");
     } finally {
@@ -3000,7 +4225,7 @@ function StandaloneNotepadWindow() {
           ) : (
             <div className="standalone-note-preview">
               {note?.body.trim() ? (
-                <ReactMarkdown
+                <MarkdownPreview
                   components={{
                     a: ({ children, ...props }) => (
                       <a {...props} target="_blank" rel="noreferrer">
@@ -3010,7 +4235,7 @@ function StandaloneNotepadWindow() {
                   }}
                 >
                   {note.body}
-                </ReactMarkdown>
+                </MarkdownPreview>
               ) : (
                 <p>Nothing to preview yet.</p>
               )}

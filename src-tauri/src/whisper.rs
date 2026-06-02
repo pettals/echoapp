@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::{app_error::AppError, config::AppConfig};
 use hound::WavReader;
 use std::path::{Path, PathBuf};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -6,14 +6,6 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 pub fn model_path(model_size: &str) -> Result<PathBuf, String> {
     let dir = AppConfig::models_dir()?;
     Ok(dir.join(format!("ggml-{model_size}.bin")))
-}
-
-pub fn is_model_downloaded(model_size: &str) -> Result<bool, String> {
-    let path = model_path(model_size)?;
-    Ok(path.exists()
-        && std::fs::metadata(&path)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false))
 }
 
 /// Load WAV file and convert to 16kHz mono f32 samples as required by Whisper.
@@ -66,21 +58,47 @@ fn load_wav_as_whisper_input(audio_path: &Path) -> Result<Vec<f32>, String> {
     Ok(resampled)
 }
 
-pub fn transcribe_local(audio_path: &Path, model_size: &str) -> Result<String, String> {
-    let model = model_path(model_size)?;
+pub fn transcribe_local(audio_path: &Path, model_size: &str) -> Result<String, AppError> {
+    let model = model_path(model_size).map_err(|e| {
+        AppError::new(
+            "local_model_path_failed",
+            format!("Could not locate the local model folder: {e}"),
+            false,
+            Some("Open Settings"),
+        )
+    })?;
     if !model.exists() {
-        return Err(format!(
-            "Whisper {model_size} model not downloaded. Please download it in Settings."
-        ));
+        return Err(AppError::missing_local_model(model_size));
     }
 
     let ctx = WhisperContext::new_with_params(
-        model.to_str().ok_or("Invalid model path")?,
+        model.to_str().ok_or_else(|| {
+            AppError::new(
+                "invalid_local_model_path",
+                "The local Whisper model path is invalid.",
+                false,
+                Some("Open Settings"),
+            )
+        })?,
         WhisperContextParameters::default(),
     )
-    .map_err(|e| format!("Failed to load Whisper model: {e}"))?;
+    .map_err(|e| {
+        AppError::new(
+            "local_model_load_failed",
+            format!("Failed to load the local Whisper model: {e}"),
+            false,
+            Some("Open Settings"),
+        )
+    })?;
 
-    let audio_data = load_wav_as_whisper_input(audio_path)?;
+    let audio_data = load_wav_as_whisper_input(audio_path).map_err(|e| {
+        AppError::new(
+            "audio_read_failed",
+            format!("Could not read the recording: {e}"),
+            true,
+            None,
+        )
+    })?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(num_cpus());
@@ -91,12 +109,22 @@ pub fn transcribe_local(audio_path: &Path, model_size: &str) -> Result<String, S
     params.set_language(Some("en"));
     params.set_suppress_blank(true);
 
-    let mut state = ctx
-        .create_state()
-        .map_err(|e| format!("State create error: {e}"))?;
-    state
-        .full(params, &audio_data)
-        .map_err(|e| format!("Whisper inference error: {e}"))?;
+    let mut state = ctx.create_state().map_err(|e| {
+        AppError::new(
+            "local_model_state_failed",
+            format!("State create error: {e}"),
+            true,
+            None,
+        )
+    })?;
+    state.full(params, &audio_data).map_err(|e| {
+        AppError::new(
+            "local_transcription_failed",
+            format!("Whisper inference error: {e}"),
+            true,
+            None,
+        )
+    })?;
 
     let num_segments = state.full_n_segments();
     let mut text = String::new();
@@ -110,7 +138,7 @@ pub fn transcribe_local(audio_path: &Path, model_size: &str) -> Result<String, S
 
     let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
-        return Err("No speech detected in the audio.".to_string());
+        return Err(AppError::empty_speech());
     }
 
     Ok(trimmed)

@@ -3,11 +3,14 @@ import {
   CheckCircle2,
   Cloud,
   Command,
+  Copy,
   Cpu,
+  FileText,
   History,
   Mic,
   Moon,
   Monitor,
+  Power,
   RefreshCw,
   Save,
   Shield,
@@ -38,6 +41,9 @@ interface ModelStatus {
   downloaded: boolean;
   downloading: boolean;
   file_size_bytes: number;
+  expected_size_bytes: number;
+  integrity_checked: boolean;
+  integrity_error: string | null;
   model_size: string;
 }
 
@@ -68,10 +74,26 @@ interface GroqReadiness {
   cleanup_model_ok: boolean;
 }
 
+interface SupportDiagnostics {
+  generatedAt: string;
+  appVersion: string;
+  platform: string;
+  arch: string;
+  modelProvider: string;
+  setupReady: boolean;
+  historyItemCount: number;
+  notepadNoteCount: number;
+  statsTotalWords: number;
+  statsDictationCount: number;
+  recentErrors: Array<{ code: string; context: string; retryable: boolean }>;
+  privacy: string[];
+}
+
 interface SettingsProps {
   config: AppConfig;
   onSave: (config: AppConfig) => Promise<void>;
   onCancel: () => void;
+  onOpenOnboarding?: () => void;
   onPreviewAppearance?: (theme: AppearanceTheme) => void;
   shortcutError?: string;
   setupStatus?: SetupStatus | null;
@@ -125,7 +147,7 @@ function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElemen
   const key = normalizeShortcutKey(event.key);
   if (!parts.includes(key)) parts.push(key);
 
-  return parts.length > 1 ? parts.join("+") : null;
+  return parts.join("+");
 }
 
 function formatBytes(bytes: number): string {
@@ -224,6 +246,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState("");
+  const [verifying, setVerifying] = useState(false);
   const reduceMotion = useReducedMotion() ?? false;
 
   const checkStatus = useCallback(async () => {
@@ -231,7 +254,10 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       const mockStatus = {
         downloaded: modelSize === "small",
         downloading: false,
-        file_size_bytes: modelSize === "small" ? 465 * 1024 * 1024 : 0,
+        file_size_bytes: modelSize === "small" ? 487_601_967 : 0,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: false,
+        integrity_error: null,
         model_size: modelSize,
       };
       setStatus(mockStatus);
@@ -280,7 +306,10 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       setStatus({
         downloaded: true,
         downloading: false,
-        file_size_bytes: modelSize === "small" ? 465 * 1024 * 1024 : 1.5 * 1024 * 1024 * 1024,
+        file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: true,
+        integrity_error: null,
         model_size: modelSize,
       });
       return;
@@ -296,12 +325,44 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
     }
   };
 
+  const handleVerify = async () => {
+    setError("");
+    if (!HAS_TAURI) {
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              integrity_checked: true,
+              integrity_error: null,
+            }
+          : prev
+      );
+      return;
+    }
+
+    setVerifying(true);
+    try {
+      const verified = await invoke<ModelStatus>("verify_model_status", { modelSize });
+      setStatus(verified);
+      if (!verified.downloaded && verified.integrity_error) {
+        setError(verified.integrity_error);
+      }
+    } catch (e) {
+      setError(formatErrorMessage(e));
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!HAS_TAURI) {
       setStatus({
         downloaded: false,
         downloading: false,
         file_size_bytes: 0,
+        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        integrity_checked: false,
+        integrity_error: null,
         model_size: modelSize,
       });
       return;
@@ -315,8 +376,28 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
     }
   };
 
-  const sizeHint = modelSize === "small" ? "~465 MB" : "~1.5 GB";
-  if (!status) return null;
+  const expectedSize =
+    status?.expected_size_bytes || (modelSize === "small" ? 487_601_967 : 1_533_763_059);
+  const sizeHint =
+    modelSize === "small"
+      ? `${formatBytes(expectedSize)} download, about 0.5 GB on disk`
+      : `${formatBytes(expectedSize)} download, about 1.6 GB on disk`;
+  const statusTone = !status
+    ? "neutral"
+    : status.downloaded
+      ? "success"
+      : status.downloading
+        ? "accent"
+        : "neutral";
+  const statusLabel = !status
+    ? "Checking"
+    : status.downloaded
+      ? `${status.integrity_checked ? "Verified" : "Ready"} (${formatBytes(status.file_size_bytes)})`
+      : status.downloading
+        ? "Downloading"
+        : status.integrity_error
+          ? "Needs retry"
+          : "Not downloaded";
 
   return (
     <Card className="model-download-card">
@@ -325,17 +406,17 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
           <strong>Whisper {modelSize.charAt(0).toUpperCase() + modelSize.slice(1)}</strong>
           <span>{sizeHint}</span>
         </div>
-        <Chip tone={status.downloaded ? "success" : status.downloading ? "accent" : "neutral"}>
-          {status.downloaded
-            ? `Downloaded (${formatBytes(status.file_size_bytes)})`
-            : status.downloading
-              ? "Downloading"
-              : "Not downloaded"}
-        </Chip>
+        <Chip tone={statusTone}>{statusLabel}</Chip>
       </div>
 
+      <p className="settings-helper">
+        Echo checks the file size before enabling local transcription. Verify runs a full SHA-256
+        checksum when you need it.
+        {status?.integrity_error ? ` ${status.integrity_error}` : ""}
+      </p>
+
       <AnimatePresence initial={false} mode="wait">
-        {status.downloading && (
+        {status?.downloading && (
           <motion.div
             key="download-progress"
             className="download-progress"
@@ -347,7 +428,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
             <Progress value={progress?.percentage} />
             <span>
               {progress
-                ? `${formatBytes(progress.bytes_downloaded)} / ${formatBytes(progress.total_bytes)} (${progress.percentage.toFixed(0)}%)`
+                ? `${formatBytes(progress.bytes_downloaded)} / ${formatBytes(progress.total_bytes || expectedSize)} (${progress.percentage.toFixed(0)}%)`
                 : "Starting download..."}
             </span>
           </motion.div>
@@ -369,15 +450,32 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       </AnimatePresence>
 
       <div className="settings-row">
-        {!status.downloaded && !status.downloading && (
-          <Button variant="primary" onClick={handleDownload}>
-            Download Model
+        {!status && (
+          <Button variant="secondary" disabled>
+            Checking...
           </Button>
         )}
-        {status.downloaded && !status.downloading && (
-          <Button variant="secondary" onClick={handleDelete}>
-            Remove
+        {status && !status.downloaded && !status.downloading && (
+          <Button variant="primary" onClick={handleDownload}>
+            {status.integrity_error ? "Retry Download" : "Download Model"}
           </Button>
+        )}
+        {status?.downloaded && !status.downloading && (
+          <>
+            {!status.integrity_checked && (
+              <Button
+                variant="secondary"
+                icon={<RefreshCw size={15} />}
+                onClick={() => void handleVerify()}
+                disabled={verifying}
+              >
+                {verifying ? "Verifying..." : "Verify"}
+              </Button>
+            )}
+            <Button variant="secondary" onClick={handleDelete} disabled={verifying}>
+              Remove
+            </Button>
+          </>
         )}
       </div>
     </Card>
@@ -422,6 +520,7 @@ export default function Settings({
   config,
   onSave,
   onCancel,
+  onOpenOnboarding,
   onPreviewAppearance,
   shortcutError = "",
   setupStatus,
@@ -441,6 +540,9 @@ export default function Settings({
   const [shortcutCaptureHint, setShortcutCaptureHint] = useState(
     "Click the field, then press your shortcut."
   );
+  const [diagnostics, setDiagnostics] = useState<SupportDiagnostics | null>(null);
+  const [diagnosticsState, setDiagnosticsState] = useState<"idle" | "loading" | "copied" | "error">("idle");
+  const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
   const reduceMotion = useReducedMotion() ?? false;
 
   useEffect(() => {
@@ -606,6 +708,51 @@ export default function Settings({
     await onRefreshSetup?.();
   };
 
+  const handleCopyDiagnostics = async () => {
+    setDiagnosticsState("loading");
+    setDiagnosticsMessage("");
+
+    if (!HAS_TAURI) {
+      const preview = {
+        generatedAt: new Date().toISOString(),
+        appVersion: "0.1.0",
+        platform: "preview",
+        arch: "preview",
+        modelProvider: form.model_provider,
+        setupReady: !!setupStatus?.ready,
+        historyItemCount: 0,
+        notepadNoteCount: 0,
+        statsTotalWords: 0,
+        statsDictationCount: 0,
+        recentErrors: [],
+        privacy: [
+          "Transcript text is excluded.",
+          "Notepad note contents are excluded.",
+          "Audio files and audio samples are excluded.",
+          "Groq API keys and future company cloud credentials are excluded.",
+        ],
+      };
+      setDiagnostics(preview);
+      setDiagnosticsState("copied");
+      setDiagnosticsMessage("Preview diagnostics generated.");
+      return;
+    }
+
+    try {
+      const [report, json] = await Promise.all([
+        invoke<SupportDiagnostics>("get_support_diagnostics"),
+        invoke<string>("get_support_diagnostics_json"),
+      ]);
+      await invoke("copy_transcript", { text: json });
+      setDiagnostics(report);
+      setDiagnosticsState("copied");
+      setDiagnosticsMessage("Safe diagnostics copied to clipboard.");
+    } catch (e) {
+      setDiagnosticsState("error");
+      setDiagnosticsMessage(formatErrorMessage(e));
+    }
+  };
+
   const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -618,7 +765,7 @@ export default function Settings({
 
     const accelerator = acceleratorFromKeyboardEvent(event);
     if (!accelerator) {
-      setShortcutCaptureHint("Press one more key to complete the shortcut.");
+      setShortcutCaptureHint("Press any key or key combo.");
       return;
     }
 
@@ -679,6 +826,11 @@ export default function Settings({
               </Chip>
             ))}
           </div>
+        )}
+        {onOpenOnboarding && (
+          <Button variant="secondary" onClick={onOpenOnboarding}>
+            Run onboarding
+          </Button>
         )}
       </motion.section>
 
@@ -818,12 +970,20 @@ export default function Settings({
               onChange={(cleanup_enabled) => setForm({ ...form, cleanup_enabled })}
               label="Enable AI cleanup"
             />
+            <Alert tone="info">
+              Cleanup uses your Groq cleanup model after transcription. If cleanup fails, Echo keeps
+              the original transcript instead of blocking dictation.
+            </Alert>
           </SettingsSection>
         </>
       )}
 
       {form.model_provider === "local" && (
         <SettingsSection icon={<Cpu size={18} />} title="Local Whisper Models">
+          <Alert tone="info">
+            Local mode transcribes entirely on this device and returns the raw transcript. Groq AI
+            cleanup is not run in local mode.
+          </Alert>
           <SelectField
             id="local-model-size"
             label="Model Size"
@@ -850,9 +1010,9 @@ export default function Settings({
           label="Shortcut"
           value={form.shortcut}
           readOnly
-          onFocus={() => setShortcutCaptureHint("Press the keys you want to use.")}
+          onFocus={() => setShortcutCaptureHint("Press any key or key combo. Escape cancels here.")}
           onKeyDown={handleShortcutKeyDown}
-          placeholder="CommandOrControl+Shift+Space"
+          placeholder="Press any key or key combo"
           helperText={shortcutError || shortcutCaptureHint}
           error={!!shortcutError}
         />
@@ -941,7 +1101,7 @@ export default function Settings({
             granted={accessibilityGranted}
             icon={<span className="sf-symbol sf-symbol--accessibility" aria-hidden />}
             onAllow={() => void handleAllowAccessibility()}
-            tone={accessibilityGranted ? "info" : "warning"}
+            tone="info"
           >
             On macOS, enable Echo in Accessibility for automatic paste. If blocked, Echo copies the transcript.
           </PermissionCard>
@@ -954,6 +1114,11 @@ export default function Settings({
           onChange={(history_enabled) => setForm({ ...form, history_enabled })}
           label="Save dictation history"
         />
+        <Alert tone={form.history_enabled ? "warning" : "info"}>
+          {form.history_enabled
+            ? "New dictations are saved locally on this device."
+            : "New dictations will not be saved. Existing local history stays until you clear it from History."}
+        </Alert>
         <Field
           className="history-limit-field"
           id="history-limit"
@@ -971,6 +1136,46 @@ export default function Settings({
           }
           helperText="Echo keeps at most 100 local history items."
         />
+      </SettingsSection>
+
+      <SettingsSection icon={<FileText size={18} />} title="Support Diagnostics">
+        <Alert tone="info">
+          Diagnostics include app, platform, setup, model, history count, note count, aggregate
+          stats, and safe error metadata only. They never include transcripts, note contents, audio,
+          clipboard contents, Groq API keys, or future Pettal cloud credentials.
+        </Alert>
+        <div className="diagnostics-card">
+          <div>
+            <strong>Privacy-safe support report</strong>
+            <span>
+              {diagnostics
+                ? `${diagnostics.platform}/${diagnostics.arch} · ${diagnostics.modelProvider} · ${diagnostics.recentErrors.length} safe errors`
+                : "Generate this when support needs environment details."}
+            </span>
+          </div>
+          <Button
+            disabled={diagnosticsState === "loading"}
+            icon={<Copy size={15} />}
+            onClick={() => void handleCopyDiagnostics()}
+            variant="secondary"
+          >
+            {diagnosticsState === "loading" ? "Preparing..." : "Copy Diagnostics"}
+          </Button>
+        </div>
+        {diagnostics && (
+          <div className="diagnostics-summary">
+            <span>Version {diagnostics.appVersion}</span>
+            <span>{diagnostics.setupReady ? "Setup ready" : "Setup needs attention"}</span>
+            <span>{diagnostics.historyItemCount} history items</span>
+            <span>{diagnostics.notepadNoteCount} notes</span>
+            <span>{diagnostics.statsDictationCount} dictations</span>
+          </div>
+        )}
+        {diagnosticsMessage && (
+          <Alert tone={diagnosticsState === "error" ? "error" : "success"}>
+            {diagnosticsMessage}
+          </Alert>
+        )}
       </SettingsSection>
 
       <SettingsSection icon={<Volume2 size={18} />} title="Sounds">
@@ -998,6 +1203,18 @@ export default function Settings({
             onChange={(success_sound) => setForm({ ...form, success_sound })}
           />
         </div>
+      </SettingsSection>
+
+      <SettingsSection icon={<Power size={18} />} title="Startup">
+        <Toggle
+          checked={form.launch_at_login}
+          onChange={(launch_at_login) => setForm({ ...form, launch_at_login })}
+          label="Launch Echo at login"
+        />
+        <Alert tone="info">
+          When enabled, Echo registers with the operating system and starts automatically after you
+          sign in. You can turn this off here at any time.
+        </Alert>
       </SettingsSection>
 
       <div className="settings-actions">
