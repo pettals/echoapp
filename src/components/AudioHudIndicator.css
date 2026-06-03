@@ -71,15 +71,10 @@
 .audio-hud--idle .audio-hud__island {
   width: 56px;
   height: 14px;
-}
-
-.audio-hud--idle:not(.audio-hud--expanded) .audio-hud__island {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .audio-hud--idle.audio-hud--expanded .audio-hud__island {
-  width: 252px;
-  height: 46px;
   overflow: visible;
 }
 
@@ -163,21 +158,25 @@
 }
 
 .audio-hud__compact-mark {
+  position: absolute;
+  inset: 50% auto auto 50%;
   width: 22px;
   height: 3px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.11);
+  translate: -50% -50%;
 }
 
 .audio-hud__idle-actions {
-  position: relative;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
   display: grid;
   grid-template-columns: 38px minmax(34px, 1fr) 38px;
   align-items: center;
   justify-items: center;
   padding: 0 4px;
+  pointer-events: none;
+  transform-origin: 50% 50%;
 }
 
 .audio-hud__action {
@@ -192,29 +191,52 @@
   color: white;
   background: transparent;
   cursor: pointer;
+  pointer-events: auto;
   transition:
     color 120ms var(--hud-motion-ease),
     transform 120ms var(--hud-motion-ease);
+  transform-origin: 50% 50%;
 }
 
 .audio-hud__action-circle {
+  position: relative;
   width: 38px;
   height: 38px;
   display: grid;
   place-items: center;
   border-radius: inherit;
   box-shadow: none;
+  flex: 0 0 38px;
+  isolation: isolate;
   transition:
     box-shadow 120ms var(--hud-motion-ease),
     filter 120ms var(--hud-motion-ease),
     transform 120ms var(--hud-motion-ease);
 }
 
+.audio-hud__action-circle::after {
+  position: absolute;
+  content: "";
+  inset: -6px;
+  z-index: -1;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--hud-action-highlight) 72%, white 10%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--hud-action-highlight) 32%, transparent) 0%, transparent 68%);
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.82);
+  transition:
+    opacity 150ms var(--hud-motion-ease),
+    transform 170ms var(--hud-motion-ease);
+}
+
 .audio-hud__action--mic .audio-hud__action-circle {
+  --hud-action-highlight: var(--hud-red);
   background: var(--hud-red);
 }
 
 .audio-hud__action--notepad .audio-hud__action-circle {
+  --hud-action-highlight: var(--hud-green);
   background: var(--hud-green);
 }
 
@@ -223,6 +245,27 @@
   filter: brightness(1.08);
   box-shadow: none;
   transform: translateY(-1px);
+}
+
+.recording-hud-shell--platform-macos .audio-hud__action:hover,
+.recording-hud-shell--platform-macos .audio-hud__action:focus-visible {
+  color: #ffffff;
+  outline: none;
+}
+
+.recording-hud-shell--platform-macos .audio-hud__action:hover .audio-hud__action-circle,
+.recording-hud-shell--platform-macos .audio-hud__action:focus-visible .audio-hud__action-circle {
+  filter: brightness(1.12) saturate(1.08);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--hud-action-highlight) 68%, white 14%),
+    0 0 14px color-mix(in srgb, var(--hud-action-highlight) 44%, transparent);
+  transform: translateY(-1px);
+}
+
+.recording-hud-shell--platform-macos .audio-hud__action:hover .audio-hud__action-circle::after,
+.recording-hud-shell--platform-macos .audio-hud__action:focus-visible .audio-hud__action-circle::after {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .audio-hud__center-divider {
@@ -611,6 +654,7 @@
   .audio-hud__bar,
   .audio-hud__action,
   .audio-hud__action-circle,
+  .audio-hud__action-circle::after,
   .audio-hud__stop-button,
   .audio-hud__copy-button {
     animation: none;

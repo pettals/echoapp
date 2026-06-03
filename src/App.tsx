@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   AlertCircle,
+  ArrowRight,
   AudioWaveform,
   BookOpen,
   CheckCircle2,
@@ -22,7 +23,10 @@ import {
   Flame,
   Gauge,
   History,
+  KeyRound,
   Keyboard,
+  LogIn,
+  Mail,
   Mic,
   PartyPopper,
   Pencil,
@@ -40,7 +44,21 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import {
+  exchangeCodeForSession,
+  getSession,
+  onAuthStateChange,
+  sendPasswordReset,
+  signInWithGoogle,
+  signInWithPassword,
+  signOut,
+  signUpWithPassword,
+  summarizeSession,
+  updatePassword,
+  type AuthUserSummary,
+} from "./auth";
 import AudioHudIndicator, { type AudioHudIndicatorState } from "./components/AudioHudIndicator";
 import AnimatedOrb from "./components/AnimatedOrb";
 import { Alert, Button, Card, Chip, IconButton, Progress } from "./components/ui";
@@ -51,6 +69,13 @@ const ReactMarkdown = lazy(() => import("react-markdown"));
 
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
 type ActiveTab = "onboarding" | "dictate" | "notepad" | "history" | "settings";
+type AuthStatus =
+  | "loading"
+  | "signedOut"
+  | "signedIn"
+  | "emailVerificationPending"
+  | "passwordRecovery"
+  | "error";
 type DesktopPlatform = "macos" | "windows";
 type DictationTarget = "external" | "standalone-notepad";
 type IndicatorMode =
@@ -239,6 +264,7 @@ const NO_SPEECH_DETECTED = "NO_SPEECH_DETECTED";
 const WORD_MILESTONES = [100, 1_000, 2_000, 5_000, 7_500, 10_000, 20_000, 50_000, 100_000];
 const INDICATOR_COMPACT_SIZE = { width: 56, height: 14 };
 const INDICATOR_HOVER_SIZE = { width: 264, height: 74 };
+const INDICATOR_IDLE_COLLAPSE_RESIZE_DELAY_MS = 680;
 const INDICATOR_RECORDING_SIZES = {
   compact: { width: 420, height: 52 },
   short: { width: 420, height: 86 },
@@ -601,18 +627,20 @@ function HudPreviewScreen() {
       ? previewStateParam
       : "idle";
   const previewLevel = Math.min(Math.max(Number(params?.get("hudLevel") ?? 0.72), 0), 1);
+  const previewTranscript = params?.get("hudTranscript") ?? "";
   const previewIndicatorMode: IndicatorMode =
     previewState === "complete" ? "success" : previewState === "copy" ? "copied_no_target" : previewState;
   const previewFrameSize = indicatorSizeForMode(
     previewIndicatorMode,
-    previewState === "idle" && previewExpanded
+    previewState === "idle" && previewExpanded,
+    previewTranscript
   );
 
   return (
     <main className="hud-preview-screen">
       <section className="hud-preview-stage" aria-label="Audio HUD preview">
         <div
-          className="hud-preview-frame"
+          className="hud-preview-frame recording-hud-shell--platform-macos"
           style={{ width: previewFrameSize.width, height: previewFrameSize.height }}
         >
           <AudioHudIndicator
@@ -620,6 +648,7 @@ function HudPreviewScreen() {
             level={previewLevel}
             expanded={previewState === "idle" && previewExpanded}
             copyText="Here is the transcript ready to copy when Echo cannot find the last focused text field."
+            liveTranscript={previewTranscript}
             copyCountdownMs={3600}
             errorMessage="Open Echo for the next step."
             completeLabel="Pasted"
@@ -645,6 +674,7 @@ function DockIndicator() {
   const [targetIconUrl, setTargetIconUrl] = useState<string | undefined>();
   const [copyCountdownMs, setCopyCountdownMs] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const expandedRef = useRef(expanded);
   const prevRecording = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastIndicatorSizeRef = useRef<{ width: number; height: number } | null>(null);
@@ -654,6 +684,10 @@ function DockIndicator() {
   const level = useRecordingLevel(recording);
   const resolvedTheme = useResolvedTheme(appearanceTheme);
   const completeLabel = mode === "copied" || mode === "copied_no_target" ? "Copied" : "Pasted";
+
+  useEffect(() => {
+    expandedRef.current = expanded;
+  }, [expanded]);
 
   useEffect(() => {
     if (mode !== "idle" && expanded) {
@@ -679,6 +713,12 @@ function DockIndicator() {
 
     let cancelled = false;
     const targetSize = indicatorSizeForMode(mode, expanded, liveTranscript);
+    const collapsingIdle =
+      mode === "idle" &&
+      !expanded &&
+      lastIndicatorSizeRef.current &&
+      Math.abs(lastIndicatorSizeRef.current.width - INDICATOR_HOVER_SIZE.width) < 0.5 &&
+      Math.abs(lastIndicatorSizeRef.current.height - INDICATOR_HOVER_SIZE.height) < 0.5;
 
     const resizeIndicator = async (force = false) => {
       try {
@@ -703,7 +743,14 @@ function DockIndicator() {
       }
     };
 
-    resizeIndicator();
+    let collapseTimer: ReturnType<typeof setTimeout> | null = null;
+    if (collapsingIdle) {
+      collapseTimer = setTimeout(() => {
+        void resizeIndicator();
+      }, INDICATOR_IDLE_COLLAPSE_RESIZE_DELAY_MS);
+    } else {
+      resizeIndicator();
+    }
 
     let dockPoll: ReturnType<typeof setInterval> | null = null;
     if (mode !== "idle") {
@@ -715,6 +762,9 @@ function DockIndicator() {
       if (dockPoll) {
         clearInterval(dockPoll);
       }
+      if (collapseTimer) {
+        clearTimeout(collapseTimer);
+      }
     };
   }, [mode, expanded, liveTranscript]);
 
@@ -724,7 +774,7 @@ function DockIndicator() {
 
     const refreshPosition = async () => {
       try {
-        const targetSize = indicatorSizeForMode("idle", expanded);
+        const targetSize = indicatorSizeForMode("idle", expandedRef.current);
         await invoke("reposition_indicator", {
           width: targetSize.width,
           height: targetSize.height,
@@ -747,7 +797,7 @@ function DockIndicator() {
     return () => {
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [mode, expanded]);
+  }, [mode]);
 
   useEffect(() => {
     if (!HAS_TAURI) {
@@ -1050,6 +1100,9 @@ function MainApp() {
   const [milestoneCelebration, setMilestoneCelebration] = useState<MilestoneCelebration | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
+  const [authMessage, setAuthMessage] = useState("");
   const [shortcutError, setShortcutError] = useState("");
   const [appearancePreview, setAppearancePreview] = useState<AppearanceTheme | null>(null);
   const [onboardingCompletionVisible, setOnboardingCompletionVisible] = useState(false);
@@ -1067,6 +1120,7 @@ function MainApp() {
   const recordingStartedAtRef = useRef<number | null>(null);
   const notepadFocusedRef = useRef(false);
   const dictationTargetRef = useRef<DictationTarget>("external");
+  const passwordRecoveryRef = useRef(false);
   const milestoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onboardingCompletionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDictationResultRef = useRef<string | null>(null);
@@ -1074,6 +1128,7 @@ function MainApp() {
   const shortcutReleasedRef = useRef<() => void>(() => {});
   const resolvedTheme = useResolvedTheme(appearancePreview ?? config?.appearance_theme ?? "dark");
   const onboardingLocked =
+    authStatus !== "signedIn" ||
     !config ||
     onboardingCompletionVisible ||
     activeTab === "onboarding" ||
@@ -1177,6 +1232,66 @@ function MainApp() {
       return null;
     }
   }, []);
+
+  const applyAuthSession = useCallback((session: Awaited<ReturnType<typeof getSession>>) => {
+    const summary = summarizeSession(session);
+    setAuthUser(summary);
+    if (passwordRecoveryRef.current && session) {
+      setAuthStatus("passwordRecovery");
+      return;
+    }
+    setAuthStatus(summary ? "signedIn" : "signedOut");
+  }, []);
+
+  const handleAuthDeepLink = useCallback(
+    async (urlString: string) => {
+      let parsed: URL;
+      try {
+        parsed = new URL(urlString);
+      } catch {
+        return;
+      }
+
+      if (parsed.protocol !== "echo:" || parsed.hostname !== "auth") return;
+      const isCallback = parsed.pathname === "/callback";
+      const isResetPassword = parsed.pathname === "/reset-password";
+      if (!isCallback && !isResetPassword) return;
+
+      const callbackError =
+        parsed.searchParams.get("error_description") ?? parsed.searchParams.get("error");
+      if (callbackError) {
+        passwordRecoveryRef.current = false;
+        setAuthStatus("error");
+        setAuthMessage(callbackError);
+        return;
+      }
+
+      const code = parsed.searchParams.get("code");
+      if (!code) {
+        setAuthStatus("error");
+        setAuthMessage("The sign-in link did not include an authorization code. Start the flow again.");
+        return;
+      }
+
+      setAuthStatus("loading");
+      setAuthMessage("");
+      passwordRecoveryRef.current = isResetPassword;
+      try {
+        const session = await exchangeCodeForSession(code);
+        applyAuthSession(session);
+        if (isResetPassword) {
+          setAuthStatus("passwordRecovery");
+        } else {
+          setActiveTab("onboarding");
+        }
+      } catch (e) {
+        passwordRecoveryRef.current = false;
+        setAuthStatus("error");
+        setAuthMessage(formatErrorMessage(e));
+      }
+    },
+    [applyAuthSession]
+  );
 
   const loadStats = useCallback(async () => {
     if (!HAS_TAURI) {
@@ -1558,6 +1673,70 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    getSession()
+      .then((session) => {
+        if (!cancelled) applyAuthSession(session);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setAuthStatus("error");
+          setAuthMessage(formatErrorMessage(e));
+        }
+      });
+
+    const subscription = onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        passwordRecoveryRef.current = true;
+        setAuthUser(summarizeSession(session));
+        setAuthStatus("passwordRecovery");
+        return;
+      }
+      if (event === "SIGNED_OUT") {
+        passwordRecoveryRef.current = false;
+        setAuthUser(null);
+        setAuthStatus("signedOut");
+        return;
+      }
+      if (session) {
+        applyAuthSession(session);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, [applyAuthSession]);
+
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+
+    const unlisten: Array<() => void> = [];
+    getCurrentDeepLinks()
+      .then((urls) => {
+        urls?.forEach((url) => void handleAuthDeepLink(url));
+      })
+      .catch((e) => console.warn("Could not read current deep links:", e));
+
+    onOpenUrl((urls) => {
+      urls.forEach((url) => void handleAuthDeepLink(url));
+    })
+      .then((u) => unlisten.push(u))
+      .catch((e) => console.warn("Could not listen for deep links:", e));
+
+    listen<string[]>("auth-deep-link", (event) => {
+      event.payload.forEach((url) => void handleAuthDeepLink(url));
+    })
+      .then((u) => unlisten.push(u))
+      .catch((e) => console.warn("Could not listen for native auth links:", e));
+
+    return () => {
+      unlisten.forEach((u) => u());
+    };
+  }, [handleAuthDeepLink]);
+
+  useEffect(() => {
     loadConfig().then((cfg) => {
       if (cfg) {
         if (!cfg.onboarding_completed) {
@@ -1697,6 +1876,107 @@ function MainApp() {
     setActiveTab("dictate");
   };
 
+  const handleSignInWithGoogle = async () => {
+    setAuthStatus("loading");
+    setAuthMessage("Opening your browser to finish Google sign-in.");
+    try {
+      await signInWithGoogle();
+      setAuthStatus("signedOut");
+      setAuthMessage("Finish sign-in in your browser. Echo will continue when you return.");
+    } catch (e) {
+      setAuthStatus("error");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleSkipSignInForDev = () => {
+    if (!import.meta.env.DEV) return;
+    passwordRecoveryRef.current = false;
+    setAuthUser({
+      id: "dev-bypass",
+      email: "Development session",
+      provider: "Dev",
+    });
+    setAuthMessage("Development bypass active.");
+    setAuthStatus("signedIn");
+    setActiveTab("onboarding");
+  };
+
+  const handleSignInWithEmail = async (email: string, password: string) => {
+    setAuthStatus("loading");
+    setAuthMessage("");
+    try {
+      const session = await signInWithPassword(email, password);
+      passwordRecoveryRef.current = false;
+      applyAuthSession(session);
+      setActiveTab("onboarding");
+    } catch (e) {
+      setAuthStatus("error");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleSignUpWithEmail = async (email: string, password: string) => {
+    setAuthStatus("loading");
+    setAuthMessage("");
+    try {
+      const result = await signUpWithPassword(email, password);
+      if (result.session) {
+        applyAuthSession(result.session);
+        setActiveTab("onboarding");
+        return;
+      }
+      setAuthStatus("emailVerificationPending");
+      setAuthMessage(`Check ${email} for Echo's verification link, then return here.`);
+    } catch (e) {
+      setAuthStatus("error");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleSendPasswordReset = async (email: string) => {
+    setAuthStatus("loading");
+    setAuthMessage("");
+    try {
+      await sendPasswordReset(email);
+      setAuthStatus("signedOut");
+      setAuthMessage(`Password reset sent to ${email}. Open the link on this computer to continue.`);
+    } catch (e) {
+      setAuthStatus("error");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleUpdatePassword = async (password: string) => {
+    setAuthStatus("loading");
+    setAuthMessage("");
+    try {
+      await updatePassword(password);
+      passwordRecoveryRef.current = false;
+      const session = await getSession();
+      applyAuthSession(session);
+      setActiveTab("onboarding");
+    } catch (e) {
+      setAuthStatus("passwordRecovery");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleSignOut = async () => {
+    setAuthStatus("loading");
+    setAuthMessage("");
+    try {
+      await signOut();
+      passwordRecoveryRef.current = false;
+      setAuthUser(null);
+      setAuthStatus("signedOut");
+      setActiveTab("onboarding");
+    } catch (e) {
+      setAuthStatus("error");
+      setAuthMessage(formatErrorMessage(e));
+    }
+  };
+
   const handleChooseOnboardingProvider = async (provider: AppConfig["model_provider"]) => {
     if (!config) return;
     setOnboardingFirstDictationPassed(false);
@@ -1811,6 +2091,21 @@ function MainApp() {
     );
   };
 
+  const handleSkipOnboarding = async () => {
+    if (!config) return;
+    if (onboardingCompletionTimerRef.current) {
+      clearTimeout(onboardingCompletionTimerRef.current);
+      onboardingCompletionTimerRef.current = null;
+    }
+    await saveConfig({ ...config, onboarding_completed: true });
+    setOnboardingCompletionVisible(false);
+    setOnboardingFirstDictationPassed(false);
+    setOnboardingDictationState("idle");
+    setOnboardingDictationMessage("");
+    setErrorMsg("");
+    setActiveTab("dictate");
+  };
+
   const handleSetupAction = async (check: SetupCheck) => {
     if (check.id === "paste" || check.action_label?.includes("Accessibility")) {
       await invoke("request_accessibility_permission").catch(console.error);
@@ -1861,7 +2156,46 @@ function MainApp() {
         />
         <section className="onboarding-window" data-tauri-drag-region onMouseDown={startWindowDrag}>
           <AnimatePresence mode="wait" initial={false}>
-            {!config && (
+            {authStatus === "loading" && (
+              <motion.div
+                key="auth-loading"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+              >
+                <Card className="onboarding-card onboarding-card--carousel onboarding-loading-card">
+                  <Chip tone="accent">Account</Chip>
+                  <h3>Preparing Echo</h3>
+                  <p>{authMessage || "Checking your account session..."}</p>
+                </Card>
+              </motion.div>
+            )}
+            {authStatus !== "loading" && authStatus !== "signedIn" && (
+              <motion.div
+                key="auth-gate"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.99 }}
+                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+              >
+                <AuthGate
+                  authMessage={authMessage}
+                  authStatus={authStatus}
+                  onGoogleSignIn={() => void handleSignInWithGoogle()}
+                  onSkipSignIn={handleSkipSignInForDev}
+                  onPasswordReset={(email) => void handleSendPasswordReset(email)}
+                  onPasswordUpdate={(password) => void handleUpdatePassword(password)}
+                  onRetry={() => {
+                    setAuthStatus("signedOut");
+                    setAuthMessage("");
+                  }}
+                  onSignIn={(email, password) => void handleSignInWithEmail(email, password)}
+                  onSignUp={(email, password) => void handleSignUpWithEmail(email, password)}
+                />
+              </motion.div>
+            )}
+            {authStatus === "signedIn" && !config && (
               <motion.div
                 key="onboarding-loading"
                 initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
@@ -1876,10 +2210,10 @@ function MainApp() {
                 </Card>
               </motion.div>
             )}
-            {config && onboardingCompletionVisible && (
+            {authStatus === "signedIn" && config && onboardingCompletionVisible && (
               <OnboardingSuccess key="onboarding-success" reduceMotion={reduceMotion} />
             )}
-            {config && !onboardingCompletionVisible && (
+            {authStatus === "signedIn" && config && !onboardingCompletionVisible && (
               <motion.div
                 key="onboarding-flow"
                 initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
@@ -1904,6 +2238,7 @@ function MainApp() {
                   onSaveGroqKey={handleSaveOnboardingGroqKey}
                   onSaveInputDevice={handleSaveOnboardingInputDevice}
                   onSaveShortcut={handleSaveOnboardingShortcut}
+                  onSkip={() => void handleSkipOnboarding()}
                   onStartFirstDictation={handleStartOnboardingDictation}
                   onStopFirstDictation={handleStopOnboardingDictation}
                 />
@@ -2016,8 +2351,10 @@ function MainApp() {
                 {activeTab === "settings" && config && (
                   <Suspense fallback={<SettingsFallback />}>
                     <Settings
+                      authUser={authUser}
                       config={config}
                       onSave={handleSaveSettings}
+                      onSignOut={handleSignOut}
                       onCancel={() => {
                         setAppearancePreview(null);
                         setActiveTab("dictate");
@@ -2063,6 +2400,256 @@ function NavButton({
   );
 }
 
+function passwordStrengthError(password: string) {
+  if (password.length < 8) return "Use at least 8 characters.";
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return "Use letters and numbers.";
+  }
+  return "";
+}
+
+function AuthGate({
+  authMessage,
+  authStatus,
+  onGoogleSignIn,
+  onSkipSignIn,
+  onPasswordReset,
+  onPasswordUpdate,
+  onRetry,
+  onSignIn,
+  onSignUp,
+}: {
+  authMessage: string;
+  authStatus: AuthStatus;
+  onGoogleSignIn: () => void;
+  onSkipSignIn: () => void;
+  onPasswordReset: (email: string) => void;
+  onPasswordUpdate: (password: string) => void;
+  onRetry: () => void;
+  onSignIn: (email: string, password: string) => void;
+  onSignUp: (email: string, password: string) => void;
+}) {
+  const [mode, setMode] = useState<"login" | "signup" | "reset">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [localError, setLocalError] = useState("");
+  const isRecovery = authStatus === "passwordRecovery";
+  const isPending = authStatus === "emailVerificationPending";
+  const isError = authStatus === "error";
+  const isDev = import.meta.env.DEV;
+
+  const submitEmail = (event: React.FormEvent) => {
+    event.preventDefault();
+    setLocalError("");
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !trimmedEmail.includes("@")) {
+      setLocalError("Enter a valid email address.");
+      return;
+    }
+    if (mode === "reset") {
+      onPasswordReset(trimmedEmail);
+      return;
+    }
+    if (!password) {
+      setLocalError("Enter your password.");
+      return;
+    }
+    if (mode === "signup") {
+      const strengthError = passwordStrengthError(password);
+      if (strengthError) {
+        setLocalError(strengthError);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError("Passwords do not match.");
+        return;
+      }
+      onSignUp(trimmedEmail, password);
+      return;
+    }
+    onSignIn(trimmedEmail, password);
+  };
+
+  const submitNewPassword = (event: React.FormEvent) => {
+    event.preventDefault();
+    setLocalError("");
+    const strengthError = passwordStrengthError(password);
+    if (strengthError) {
+      setLocalError(strengthError);
+      return;
+    }
+    if (password !== confirmPassword) {
+      setLocalError("Passwords do not match.");
+      return;
+    }
+    onPasswordUpdate(password);
+  };
+
+  const body = () => {
+    if (isRecovery) {
+      return (
+        <form className="auth-form" onSubmit={submitNewPassword}>
+          <Chip tone="accent">Password recovery</Chip>
+          <h2>Set a new password</h2>
+          <p>Choose a new password for your Echo account, then setup will continue.</p>
+          <label className="auth-field">
+            <span>New password</span>
+            <input
+              className="ui-input"
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </label>
+          <label className="auth-field">
+            <span>Confirm password</span>
+            <input
+              className="ui-input"
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              type="password"
+              value={confirmPassword}
+            />
+          </label>
+          {(localError || authMessage) && (
+            <Alert tone={localError ? "error" : "info"}>{localError || authMessage}</Alert>
+          )}
+          <Button fullWidth icon={<KeyRound size={16} />} type="submit" variant="primary">
+            Update Password
+          </Button>
+        </form>
+      );
+    }
+
+    if (isPending) {
+      return (
+        <div className="auth-form">
+          <Chip tone="accent">Verify email</Chip>
+          <h2>Check your email</h2>
+          <p>{authMessage || "Open the verification link on this computer to continue setup."}</p>
+          <Alert tone="info">
+            Echo will resume automatically after the verification link opens the app.
+          </Alert>
+          <Button icon={<Mail size={16} />} onClick={onRetry} variant="secondary">
+            Back to Sign In
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <form className="auth-form" onSubmit={submitEmail}>
+        <Chip tone="accent">Account</Chip>
+        <h2>Let's get you started</h2>
+        <p>Create an Echo account or sign in before setup.</p>
+        <Button fullWidth icon={<LogIn size={16} />} onClick={onGoogleSignIn} variant="primary">
+          Sign in via browser
+        </Button>
+        {isDev && (
+          <Button fullWidth onClick={onSkipSignIn} variant="secondary">
+            Skip sign in for dev
+          </Button>
+        )}
+        <div className="auth-tabs" role="tablist" aria-label="Email auth mode">
+          <button
+            className={mode === "login" ? "is-active" : ""}
+            onClick={() => {
+              setMode("login");
+              setLocalError("");
+            }}
+            type="button"
+          >
+            Log In
+          </button>
+          <button
+            className={mode === "signup" ? "is-active" : ""}
+            onClick={() => {
+              setMode("signup");
+              setLocalError("");
+            }}
+            type="button"
+          >
+            Create
+          </button>
+        </div>
+        <label className="auth-field">
+          <span>Email</span>
+          <input
+            autoComplete="email"
+            className="ui-input"
+            onChange={(event) => setEmail(event.target.value)}
+            type="email"
+            value={email}
+          />
+        </label>
+        {mode !== "reset" && (
+          <label className="auth-field">
+            <span>Password</span>
+            <input
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              className="ui-input"
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </label>
+        )}
+        {mode === "signup" && (
+          <label className="auth-field">
+            <span>Confirm password</span>
+            <input
+              autoComplete="new-password"
+              className="ui-input"
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              type="password"
+              value={confirmPassword}
+            />
+          </label>
+        )}
+        {mode === "reset" && (
+          <Alert tone="info">Enter your email and Echo will send a password reset link.</Alert>
+        )}
+        {(localError || authMessage) && (
+          <Alert tone={localError || isError ? "error" : "info"}>{localError || authMessage}</Alert>
+        )}
+        <div className="auth-actions">
+          <Button fullWidth icon={<ArrowRight size={16} />} type="submit" variant="primary">
+            {mode === "signup" ? "Create Account" : mode === "reset" ? "Send Reset Link" : "Log In"}
+          </Button>
+          <Button
+            fullWidth
+            onClick={() => {
+              setMode(mode === "reset" ? "login" : "reset");
+              setLocalError("");
+            }}
+            type="button"
+            variant="ghost"
+          >
+            {mode === "reset" ? "Back to login" : "Forgot password"}
+          </Button>
+        </div>
+      </form>
+    );
+  };
+
+  return (
+    <section className="auth-gate" aria-label="Echo account">
+      <div className="auth-gate__panel">{body()}</div>
+      <div className="auth-gate__visual" aria-hidden>
+        <div className="auth-gate__visual-copy">
+          <span>Private by default</span>
+          <strong>Dictate locally. Sign in for your Echo account.</strong>
+          <p>History, notes, and insights stay on this device in v1.</p>
+        </div>
+        <div className="auth-gate__metric">
+          <AudioWaveform size={24} />
+          <span>220 wpm</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function OnboardingPanel({
   config,
   errorMsg,
@@ -2080,6 +2667,7 @@ function OnboardingPanel({
   onSaveGroqKey,
   onSaveInputDevice,
   onSaveShortcut,
+  onSkip,
   onStartFirstDictation,
   onStopFirstDictation,
 }: {
@@ -2099,6 +2687,7 @@ function OnboardingPanel({
   onSaveGroqKey: (groqApiKey: string) => Promise<string>;
   onSaveInputDevice: (inputDevice: string | null) => Promise<void>;
   onSaveShortcut: (shortcut: string) => Promise<boolean>;
+  onSkip: () => void;
   onStartFirstDictation: () => void;
   onStopFirstDictation: () => void;
 }) {
@@ -2744,16 +3333,23 @@ function OnboardingPanel({
       </div>
 
       <div className="onboarding-actions">
-        <Button disabled={currentIndex === 0} onClick={goBack} variant="secondary">
-          Back
-        </Button>
-        <Button
-          disabled={currentIndex === steps.length - 1 && (!ready || !!shortcutError || !firstDictationPassed)}
-          onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
-          variant="primary"
-        >
-          {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
-        </Button>
+        <div className="onboarding-actions__side">
+          <Button disabled={currentIndex === 0} onClick={goBack} variant="secondary">
+            Back
+          </Button>
+          <Button onClick={onSkip} variant="ghost">
+            Skip onboarding
+          </Button>
+        </div>
+        <div className="onboarding-actions__side onboarding-actions__side--end">
+          <Button
+            disabled={currentIndex === steps.length - 1 && (!ready || !!shortcutError || !firstDictationPassed)}
+            onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
+            variant="primary"
+          >
+            {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
+          </Button>
+        </div>
       </div>
     </section>
   );

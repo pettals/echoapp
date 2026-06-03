@@ -318,6 +318,170 @@ label,
   width: min(100%, 760px);
 }
 
+.onboarding-window > div:has(.auth-gate) {
+  width: min(100%, 1120px);
+}
+
+.auth-gate {
+  min-height: min(720px, calc(100vh - 112px));
+  display: grid;
+  grid-template-columns: minmax(360px, 0.72fr) minmax(420px, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.auth-gate__panel {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  padding: clamp(28px, 5vw, 64px);
+}
+
+.auth-form {
+  width: min(100%, 460px);
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.auth-form p {
+  margin: 0 0 10px;
+  color: var(--text-soft);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.auth-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 4px);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-tabs button.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.auth-field {
+  display: grid;
+  gap: 7px;
+}
+
+.auth-field > span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.auth-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-gate__visual {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #ffffff;
+  background:
+    linear-gradient(120deg, rgba(5, 12, 20, 0.18), rgba(8, 12, 18, 0.62)),
+    radial-gradient(circle at 52% 44%, rgba(255, 255, 255, 0.42), transparent 74px),
+    linear-gradient(135deg, #245f74 0%, #cdb79c 55%, #442415 100%);
+}
+
+.auth-gate__visual::before {
+  content: "";
+  position: absolute;
+  inset: 7%;
+  background:
+    radial-gradient(ellipse at 52% 40%, rgba(20, 15, 12, 0.36), transparent 18%),
+    radial-gradient(ellipse at 48% 68%, rgba(255, 238, 210, 0.62), transparent 24%),
+    linear-gradient(90deg, transparent 0 42%, rgba(15, 10, 8, 0.28) 42% 47%, transparent 47%);
+  filter: blur(22px);
+  transform: scale(1.18);
+}
+
+.auth-gate__visual-copy {
+  position: relative;
+  z-index: 1;
+  width: min(78%, 520px);
+  display: grid;
+  gap: 12px;
+  text-align: center;
+}
+
+.auth-gate__visual-copy span {
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.78;
+}
+
+.auth-gate__visual-copy strong {
+  font-size: clamp(28px, 4.2vw, 44px);
+  font-weight: 720;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.auth-gate__visual-copy p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  opacity: 0.82;
+}
+
+.auth-gate__metric {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  bottom: 21%;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+  transform: translateX(-50%);
+}
+
+.auth-gate__metric span {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .titlebar-drag-region {
   position: absolute;
   inset: 0 0 auto;
@@ -1611,6 +1775,17 @@ label,
   gap: 10px;
 }
 
+.onboarding-actions__side {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.onboarding-actions__side--end {
+  justify-content: flex-end;
+}
+
 .onboarding-loading-card {
   align-content: center;
   justify-items: center;
@@ -1664,6 +1839,14 @@ label,
 }
 
 @media (max-width: 920px) {
+  .auth-gate {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-gate__visual {
+    display: none;
+  }
+
   .onboarding-hero,
   .onboarding-grid {
     grid-template-columns: 1fr;
@@ -1679,6 +1862,14 @@ label,
 }
 
 @media (max-width: 640px) {
+  .auth-gate {
+    min-height: 0;
+  }
+
+  .auth-gate__panel {
+    padding: 24px;
+  }
+
   .onboarding-provider-grid,
   .onboarding-model-choice,
   .onboarding-summary-grid {

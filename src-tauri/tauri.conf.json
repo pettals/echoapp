@@ -53,7 +53,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' https://api.groq.com https://huggingface.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src 'self' https://api.groq.com https://huggingface.co https://glkriavrwsissibmwxhd.supabase.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["echo"]
+      }
     }
   },
   "bundle": {

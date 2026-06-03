@@ -115,6 +115,34 @@
   flex-wrap: wrap;
 }
 
+.account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.account-card strong,
+.account-card span {
+  display: block;
+}
+
+.account-card strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.account-card span {
+  margin-top: 3px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
 .provider-card {
   min-height: 82px;
   min-width: 0;

@@ -36,6 +36,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const INDICATOR_COMPACT_WIDTH: f64 = 56.0;
@@ -45,7 +46,7 @@ const INDICATOR_HOVER_HEIGHT: f64 = 74.0;
 const INDICATOR_HOVER_PILL_WIDTH: f64 = 252.0;
 const INDICATOR_HOVER_PILL_HEIGHT: f64 = 46.0;
 const INDICATOR_HOVER_TOLERANCE: f64 = 1.0;
-const INDICATOR_COLLAPSE_RESIZE_DELAY_MS: u64 = 630;
+const INDICATOR_COLLAPSE_RESIZE_DELAY_MS: u64 = 680;
 const INDICATOR_MAIN_THREAD_TIMEOUT_MS: u64 = 180;
 const INDICATOR_DOCK_CLEARANCE: f64 = 12.0;
 const INDICATOR_RECORDING_WIDTH: f64 = 420.0;
@@ -1452,6 +1453,21 @@ fn show_notepad_window(app: tauri::AppHandle) {
     }
 }
 
+#[tauri::command]
+fn get_auth_storage(key: String) -> Result<Option<String>, String> {
+    secure::get_auth_storage(&key)
+}
+
+#[tauri::command]
+fn set_auth_storage(key: String, value: String) -> Result<(), String> {
+    secure::set_auth_storage(&key, &value)
+}
+
+#[tauri::command]
+fn delete_auth_storage(key: String) -> Result<(), String> {
+    secure::delete_auth_storage(&key)
+}
+
 fn show_main_window_internal(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -1463,9 +1479,25 @@ fn show_main_window_internal(app: &tauri::AppHandle) {
     }
 }
 
+fn emit_auth_deep_links<I, U>(app: &tauri::AppHandle, urls: I)
+where
+    I: IntoIterator<Item = U>,
+    U: ToString,
+{
+    let urls: Vec<String> = urls.into_iter().map(|url| url.to_string()).collect();
+    if !urls.is_empty() {
+        show_main_window_internal(app);
+        let _ = app.emit("auth-deep-link", urls);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window_internal(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1492,6 +1524,15 @@ pub fn run() {
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             window.set_always_on_top(false).ok();
+
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                emit_auth_deep_links(&app_handle, event.urls());
+            });
+
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                emit_auth_deep_links(app.handle(), urls);
+            }
 
             #[cfg(target_os = "macos")]
             unsafe {
@@ -1770,6 +1811,9 @@ pub fn run() {
             delete_notepad_note,
             show_main_window,
             show_notepad_window,
+            get_auth_storage,
+            set_auth_storage,
+            delete_auth_storage,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

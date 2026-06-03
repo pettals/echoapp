@@ -36,6 +36,18 @@ npm run tauri dev
 
 On first launch, Echo guides setup for provider/model readiness, microphone access, shortcut validation, and paste permission guidance.
 
+## Supabase Auth Setup
+
+Echo uses the Supabase project `glkriavrwsissibmwxhd` with a publishable key for account authentication. Sessions are stored through the OS credential store in Tauri builds and are not written to `config.json`.
+
+Before testing account flows, configure Supabase Auth:
+
+- Add redirect URLs: `echo://auth/callback` and `echo://auth/reset-password`.
+- Keep Email authentication enabled with email confirmation required.
+- Enable the Google provider.
+- In Google Cloud, configure OAuth consent with `openid`, email, and profile scopes.
+- Add the Supabase callback URL to the Google OAuth client: `https://glkriavrwsissibmwxhd.supabase.co/auth/v1/callback`.
+
 ## Production Checks
 
 Run these before packaging or ticking production tasks:

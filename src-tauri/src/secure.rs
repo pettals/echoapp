@@ -2,6 +2,7 @@ use std::sync::{Mutex, OnceLock};
 
 const SERVICE: &str = "com.andrewjohn.echo";
 const GROQ_ACCOUNT: &str = "groq-api-key";
+const AUTH_ACCOUNT_PREFIX: &str = "supabase-auth:";
 
 static GROQ_API_KEY_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
@@ -21,6 +22,21 @@ fn cached_key() -> Option<String> {
 
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, GROQ_ACCOUNT).map_err(|e| format!("Credential store error: {e}"))
+}
+
+fn auth_entry(key: &str) -> Result<keyring::Entry, String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() || trimmed.len() > 180 {
+        return Err("Invalid auth storage key".to_string());
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/'))
+    {
+        return Err("Invalid auth storage key".to_string());
+    }
+    keyring::Entry::new(SERVICE, &format!("{AUTH_ACCOUNT_PREFIX}{trimmed}"))
+        .map_err(|e| format!("Credential store error: {e}"))
 }
 
 pub fn get_groq_api_key_from_store() -> Result<Option<String>, String> {
@@ -81,4 +97,40 @@ pub fn delete_groq_api_key() -> Result<(), String> {
         cache_key(None);
     }
     result
+}
+
+pub fn get_auth_storage(key: &str) -> Result<Option<String>, String> {
+    match auth_entry(key)?.get_password() {
+        Ok(value) if !value.is_empty() => Ok(Some(value)),
+        Ok(_) => Ok(None),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => {
+            let message = format!("Auth storage read error: {e}");
+            eprintln!("{message}");
+            Err(message)
+        }
+    }
+}
+
+pub fn set_auth_storage(key: &str, value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return delete_auth_storage(key);
+    }
+    auth_entry(key)?.set_password(trimmed).map_err(|e| {
+        let message = format!("Auth storage write error: {e}");
+        eprintln!("{message}");
+        message
+    })
+}
+
+pub fn delete_auth_storage(key: &str) -> Result<(), String> {
+    match auth_entry(key)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => {
+            let message = format!("Auth storage delete error: {e}");
+            eprintln!("{message}");
+            Err(message)
+        }
+    }
 }

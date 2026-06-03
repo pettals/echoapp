@@ -10,6 +10,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 
 ## Core Success Criteria
 
+- Users can create or access an Echo account with either Google sign-in or email/password authentication.
 - First-run setup guides users through microphone readiness, Accessibility/paste permissions, provider choice, shortcut setup, and mic validation.
 - Dictation works end to end: capture focus, record, transcribe, optionally clean up, paste or copy as fallback, and save history.
 - During shortcut dictation, the Dynamic Island HUD shows the target app icon, live Groq partial transcript text, and a compact waveform; local Whisper shows target/waveform while recording and the final transcript after release.
@@ -19,6 +20,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 
 ## In Scope For Production v1
 
+- Supabase-backed authentication with Google OAuth and email/password sign-up, login, logout, and session restore.
 - macOS-first polish and QA.
 - Groq provider and local Whisper provider.
 - Download and manage local small and medium Whisper models.
@@ -34,10 +36,18 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Mobile builds.
 - Multi-language UI.
 - Team accounts/sync.
+- Passwordless magic-link login, SSO/SAML, multi-factor authentication, and paid account tiers.
 - Full local LLM cleanup unless added after the core app is stable.
 
 ## Product Requirements
 
+- Authentication must support Google OAuth and email/password account creation/login.
+- First-run users who are not authenticated must see a clear auth choice before setup readiness, with a way to switch between Google and email/password.
+- Email/password sign-up must collect email, password, and password confirmation, validate password strength, show confirmation or verification requirements, and return users to the setup flow after success.
+- Login errors must be actionable: invalid credentials, existing email, weak password, network failure, OAuth cancellation, and unverified email should each leave the user with a clear next step.
+- Sessions must restore on app launch and persist securely without storing credentials in plaintext config.
+- Users must be able to sign out from Settings, after which local-only data remains on device unless a later sync feature explicitly changes that behavior.
+- Authentication must not weaken local privacy expectations: transcript history, Notepad notes, and dictation insights remain local in v1.
 - First run must not strand users in Settings without a clear next action.
 - Echo must expose a visible setup state for mic, shortcut, provider/model, and paste permissions.
 - Auto-paste must gracefully fall back to copying without losing the transcript.
@@ -52,6 +62,8 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 
 ## Production Risks
 
+- Supabase Auth redirect handling in a Tauri desktop app needs careful deep-link/callback handling, especially for Google OAuth and session restore.
+- Email verification, password reset, and OAuth provider configuration can strand first-run users if callback URLs and recovery states are incomplete.
 - macOS Accessibility/AppleScript paste flow needs explicit permission onboarding and real-app testing.
 - Windows media ducking is currently a no-op.
 - Shortcut capture needs validation and conflict feedback.

@@ -7,6 +7,7 @@ import {
   Cpu,
   FileText,
   History,
+  LogOut,
   Mic,
   Moon,
   Monitor,
@@ -16,12 +17,14 @@ import {
   Shield,
   Sparkles,
   Sun,
+  User,
   Volume2,
   X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { AppConfig, AppearanceTheme } from "../App";
+import type { AuthUserSummary } from "../auth";
 import groqLogo from "../assets/groq-logo.svg";
 import {
   Alert,
@@ -90,9 +93,11 @@ interface SupportDiagnostics {
 }
 
 interface SettingsProps {
+  authUser: AuthUserSummary | null;
   config: AppConfig;
   onSave: (config: AppConfig) => Promise<void>;
   onCancel: () => void;
+  onSignOut: () => Promise<void>;
   onOpenOnboarding?: () => void;
   onPreviewAppearance?: (theme: AppearanceTheme) => void;
   shortcutError?: string;
@@ -517,9 +522,11 @@ function PermissionCard({
 }
 
 export default function Settings({
+  authUser,
   config,
   onSave,
   onCancel,
+  onSignOut,
   onOpenOnboarding,
   onPreviewAppearance,
   shortcutError = "",
@@ -833,6 +840,22 @@ export default function Settings({
           </Button>
         )}
       </motion.section>
+
+      <SettingsSection icon={<User size={18} />} title="Account">
+        <div className="account-card">
+          <div>
+            <strong>{authUser?.email ?? "Signed in"}</strong>
+            <span>{authUser ? `${authUser.provider} account` : "Echo account"}</span>
+          </div>
+          <Button icon={<LogOut size={15} />} onClick={() => void onSignOut()} type="button" variant="secondary">
+            Sign Out
+          </Button>
+        </div>
+        <Alert tone="info">
+          Echo v1 keeps transcript history, Notepad notes, and dictation insights local on this
+          device. Signing out does not delete local app data.
+        </Alert>
+      </SettingsSection>
 
       <SettingsSection icon={<Monitor size={18} />} title="Appearance">
         <SegmentedControl<AppearanceTheme>

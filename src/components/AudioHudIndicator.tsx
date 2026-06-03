@@ -52,6 +52,17 @@ const idleAnimationDuration = 0.42;
 const idleCollapseDuration = idleAnimationDuration * 1.5;
 const idleActionRevealDuration = idleAnimationDuration * 0.28;
 const idleActionRevealDelay = idleAnimationDuration - idleActionRevealDuration;
+const IDLE_COMPACT_WIDTH = 56;
+const IDLE_COMPACT_HEIGHT = 14;
+const IDLE_EXPANDED_WIDTH = 252;
+const IDLE_EXPANDED_HEIGHT = 46;
+const RECORDING_WIDTH = 420;
+const RECORDING_HEIGHTS: Record<LiveTier, number> = {
+  compact: 52,
+  short: 86,
+  medium: 110,
+  long: 132,
+};
 
 type IdleAction = "mic" | "notepad";
 type LiveTier = "compact" | "short" | "medium" | "long";
@@ -131,64 +142,104 @@ export default function AudioHudIndicator({
     : { duration: idleActionRevealDuration, ease: hudEase };
   const islandVariants: Variants = {
     idleCollapsed: {
-      scale: reduceMotion ? 1 : [0.96, 1],
+      width: IDLE_COMPACT_WIDTH,
+      height: IDLE_COMPACT_HEIGHT,
+      borderRadius: 999,
+      scale: 1,
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: idleCollapseTransition,
+            height: idleCollapseTransition,
+            borderRadius: idleCollapseTransition,
             scale: { duration: idleCollapseDuration, ease: hudEase },
-            layout: idleCollapseTransition,
           },
     },
     idleExpanded: {
-      scale: reduceMotion ? 1 : [0.96, 1.018, 1],
+      width: IDLE_EXPANDED_WIDTH,
+      height: IDLE_EXPANDED_HEIGHT,
+      borderRadius: 999,
+      scale: 1,
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
-            scale: { duration: idleAnimationDuration, times: [0, 0.7, 1], ease: hudEase },
-            layout: idleTransition,
+            width: idleTransition,
+            height: idleTransition,
+            borderRadius: idleTransition,
+            scale: { duration: idleAnimationDuration, ease: hudEase },
           },
     },
     recording: {
+      width: RECORDING_WIDTH,
+      height: RECORDING_HEIGHTS[liveTier],
+      borderRadius: 26,
       scale: reduceMotion ? 1 : [0.965, 0.992, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: islandSpring,
+            height: islandSpring,
+            borderRadius: islandSpring,
             scale: { duration: 0.2, ease: emphasizedEase },
             layout: islandSpring,
           },
     },
     processing: {
+      width: RECORDING_WIDTH,
+      height: RECORDING_HEIGHTS[liveTier],
+      borderRadius: 26,
       scale: reduceMotion ? 1 : [0.985, 0.996, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: islandSpring,
+            height: islandSpring,
+            borderRadius: islandSpring,
             scale: { duration: 0.22, ease: hudEase },
             layout: islandSpring,
           },
     },
     complete: {
+      width: 132,
+      height: 34,
+      borderRadius: 999,
       scale: reduceMotion ? 1 : [0.9, 0.985, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: islandSpring,
+            height: islandSpring,
+            borderRadius: islandSpring,
             scale: { duration: 0.22, times: [0, 0.72, 1], ease: emphasizedEase },
             layout: islandSpring,
           },
     },
     copy: {
+      width: 420,
+      height: 92,
+      borderRadius: 24,
       scale: reduceMotion ? 1 : [0.975, 0.994, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: islandSpring,
+            height: islandSpring,
+            borderRadius: islandSpring,
             scale: { duration: 0.28, ease: hudEase },
             layout: islandSpring,
           },
     },
     error: {
+      width: 240,
+      height: 72,
+      borderRadius: 24,
       scale: reduceMotion ? 1 : [0.982, 1, 0.992, 1],
       transition: reduceMotion
         ? { duration: 0.01 }
         : {
+            width: islandSpring,
+            height: islandSpring,
+            borderRadius: islandSpring,
             scale: { duration: 0.26, ease: hudEase },
             layout: islandSpring,
           },
@@ -197,24 +248,24 @@ export default function AudioHudIndicator({
   const actionGroupVariants: Variants = {
     hidden: {
       opacity: 0,
-      scale: reduceMotion ? 1 : 0.82,
+      y: reduceMotion ? 0 : 2,
       transition: idleCollapseTransition,
     },
     visible: {
       opacity: 1,
-      scale: 1,
+      y: 0,
       transition: idleActionItemTransition,
     },
   };
   const actionItemVariants: Variants = {
     hidden: {
       opacity: 0,
-      scale: reduceMotion ? 1 : 0.82,
+      y: reduceMotion ? 0 : 1,
       transition: idleCollapseTransition,
     },
     visible: {
       opacity: 1,
-      scale: 1,
+      y: 0,
       transition: idleActionRevealTransition,
     },
   };
@@ -271,7 +322,7 @@ export default function AudioHudIndicator({
       role="group"
       tabIndex={0}
       onClick={handleIslandClick}
-      layout
+      layout={state !== "idle"}
       transition={{
         layout: state === "idle" && !idleExpanded ? idleCollapseTransition : reduceMotion ? { duration: 0.01 } : islandSpring,
       }}
@@ -288,7 +339,7 @@ export default function AudioHudIndicator({
     >
       <motion.div
         className="audio-hud__island"
-        layout
+        layout={state !== "idle"}
         variants={islandVariants}
         animate={islandVariant}
         initial={false}
