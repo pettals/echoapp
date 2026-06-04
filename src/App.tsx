@@ -16,9 +16,7 @@ import {
   BookOpen,
   CheckCircle2,
   CircleDot,
-  Cloud,
   Copy,
-  Cpu,
   FileText,
   Flame,
   Gauge,
@@ -62,6 +60,7 @@ import {
 import AudioHudIndicator, { type AudioHudIndicatorState } from "./components/AudioHudIndicator";
 import AnimatedOrb from "./components/AnimatedOrb";
 import { Alert, Button, Card, Chip, IconButton, Progress } from "./components/ui";
+import echoLogoMark from "./assets/echoNewLogoMark.png";
 import "./App.css";
 
 const Settings = lazy(() => import("./components/Settings"));
@@ -149,30 +148,6 @@ interface StructuredAppError {
 interface PasteTranscriptResult {
   status: string;
   warning?: StructuredAppError | null;
-}
-
-interface GroqReadiness {
-  ok: boolean;
-  message: string;
-  transcription_model_ok: boolean;
-  cleanup_model_ok: boolean;
-}
-
-interface ModelStatus {
-  downloaded: boolean;
-  downloading: boolean;
-  file_size_bytes: number;
-  expected_size_bytes: number;
-  integrity_checked: boolean;
-  integrity_error: string | null;
-  model_size: string;
-}
-
-interface DownloadProgress {
-  bytes_downloaded: number;
-  total_bytes: number;
-  percentage: number;
-  model_size: string;
 }
 
 interface DictationStats {
@@ -280,7 +255,7 @@ const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt"]);
 
 const MOCK_CONFIG: AppConfig = {
   groq_api_key: "gsk_mock_preview_key",
-  shortcut: "Command+d",
+  shortcut: "CommandOrControl+D",
   transcription_model: "whisper-large-v3-turbo",
   cleanup_model: "llama-3.1-8b-instant",
   cleanup_enabled: true,
@@ -417,11 +392,12 @@ function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElemen
   return parts.join("+");
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+function formatShortcutForPlatform(shortcut: string, platform: DesktopPlatform): string {
+  return shortcut
+    .split("CommandOrControl")
+    .join(platform === "macos" ? "Command" : "Control")
+    .split("+")
+    .join("+");
 }
 
 function isStructuredAppError(error: unknown): error is StructuredAppError {
@@ -457,6 +433,17 @@ function formatErrorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function authUrlParams(url: URL) {
+  const params = new URLSearchParams(url.search);
+  if (url.hash) {
+    const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+    hashParams.forEach((value, key) => {
+      if (!params.has(key)) params.set(key, value);
+    });
+  }
+  return params;
 }
 
 async function emitIndicatorMode(mode: IndicatorMode, transcript?: string) {
@@ -1257,8 +1244,8 @@ function MainApp() {
       const isResetPassword = parsed.pathname === "/reset-password";
       if (!isCallback && !isResetPassword) return;
 
-      const callbackError =
-        parsed.searchParams.get("error_description") ?? parsed.searchParams.get("error");
+      const params = authUrlParams(parsed);
+      const callbackError = params.get("error_description") ?? params.get("error");
       if (callbackError) {
         passwordRecoveryRef.current = false;
         setAuthStatus("error");
@@ -1266,7 +1253,7 @@ function MainApp() {
         return;
       }
 
-      const code = parsed.searchParams.get("code");
+      const code = params.get("code");
       if (!code) {
         setAuthStatus("error");
         setAuthMessage("The sign-in link did not include an authorization code. Start the flow again.");
@@ -1429,6 +1416,9 @@ function MainApp() {
       await emitIndicatorLiveTranscript(finalText, true);
       setTranscript(finalText);
       const activeTarget = dictationTargetRef.current;
+      if (activeTarget === "standalone-notepad") {
+        await emit("notepad-insert-transcript", finalText);
+      }
       const pasteResult =
         activeTarget === "standalone-notepad"
           ? { status: "pasted", warning: null }
@@ -1519,6 +1509,31 @@ function MainApp() {
     }
   }, [playChime, resetDictationTarget, setIndicatorMode, showMilestoneCelebration]);
 
+  const applyOnboardingDictationResult = useCallback(async (completed: boolean) => {
+    const result = lastDictationResultRef.current;
+    const passed =
+      completed &&
+      !!result &&
+      ["pasted", "copied", "copied_no_target", "copied_accessibility"].includes(result);
+
+    if (passed) {
+      setOnboardingFirstDictationPassed(true);
+      setOnboardingDictationState("success");
+      setOnboardingDictationMessage(
+        result === "pasted"
+          ? "Hotkey test worked and pasted into the target."
+          : "Hotkey test worked. Echo copied the transcript as a fallback."
+      );
+      await loadSetupStatus();
+      return true;
+    }
+
+    setOnboardingFirstDictationPassed(false);
+    setOnboardingDictationState("error");
+    setOnboardingDictationMessage(errorMsg || "Try again with a short spoken sentence.");
+    return false;
+  }, [errorMsg, loadSetupStatus]);
+
   const handleStartRecording = useCallback(async () => {
     stopRequestedRef.current = false;
     await startRecording();
@@ -1563,29 +1578,54 @@ function MainApp() {
     shortcutHeldRef.current = true;
     sessionActiveRef.current = true;
     stopRequestedRef.current = false;
+    const isOnboardingTest = activeTab === "onboarding" && config?.onboarding_completed === false;
+    if (isOnboardingTest) {
+      setOnboardingFirstDictationPassed(false);
+      setOnboardingDictationState("recording");
+      setOnboardingDictationMessage("Shortcut detected. Speak a short sentence, then release the hotkey.");
+    }
 
     const started = await startRecording();
     if (!started) {
+      if (isOnboardingTest) {
+        setOnboardingDictationState("error");
+        setOnboardingDictationMessage(errorMsg || "Could not start recording. Review setup and try again.");
+      }
       sessionActiveRef.current = false;
       return;
     }
 
     if (stopRequestedRef.current) {
-      await stopAndPaste();
+      if (isOnboardingTest) {
+        setOnboardingDictationState("processing");
+        setOnboardingDictationMessage("Transcribing and checking the paste/copy fallback...");
+      }
+      const completed = await stopAndPaste();
+      if (isOnboardingTest) {
+        await applyOnboardingDictationResult(completed);
+      }
       sessionActiveRef.current = false;
     }
-  }, [startRecording, stopAndPaste]);
+  }, [activeTab, applyOnboardingDictationResult, config?.onboarding_completed, errorMsg, startRecording, stopAndPaste]);
 
   const handleShortcutReleased = useCallback(async () => {
     shortcutHeldRef.current = false;
     stopRequestedRef.current = true;
+    const isOnboardingTest = activeTab === "onboarding" && config?.onboarding_completed === false;
 
     if (!sessionActiveRef.current) return;
     if (!startInFlightRef.current) {
-      await stopAndPaste();
+      if (isOnboardingTest) {
+        setOnboardingDictationState("processing");
+        setOnboardingDictationMessage("Transcribing and checking the paste/copy fallback...");
+      }
+      const completed = await stopAndPaste();
+      if (isOnboardingTest) {
+        await applyOnboardingDictationResult(completed);
+      }
       sessionActiveRef.current = false;
     }
-  }, [stopAndPaste]);
+  }, [activeTab, applyOnboardingDictationResult, config?.onboarding_completed, stopAndPaste]);
 
   shortcutPressedRef.current = handleShortcutPressed;
   shortcutReleasedRef.current = handleShortcutReleased;
@@ -1890,14 +1930,13 @@ function MainApp() {
   };
 
   const handleSkipSignInForDev = () => {
-    if (!import.meta.env.DEV) return;
     passwordRecoveryRef.current = false;
     setAuthUser({
-      id: "dev-bypass",
-      email: "Development session",
-      provider: "Dev",
+      id: "local-bypass",
+      email: "Local session",
+      provider: "Local",
     });
-    setAuthMessage("Development bypass active.");
+    setAuthMessage("Local session active.");
     setAuthStatus("signedIn");
     setActiveTab("onboarding");
   };
@@ -1977,38 +2016,11 @@ function MainApp() {
     }
   };
 
-  const handleChooseOnboardingProvider = async (provider: AppConfig["model_provider"]) => {
-    if (!config) return;
-    setOnboardingFirstDictationPassed(false);
-    await saveConfig({ ...config, model_provider: provider });
-  };
-
-  const handleChooseOnboardingLocalModel = async (localModelSize: AppConfig["local_model_size"]) => {
-    if (!config) return;
-    setOnboardingFirstDictationPassed(false);
-    await saveConfig({
-      ...config,
-      model_provider: "local",
-      local_model_size: localModelSize,
-    });
-  };
-
   const handleSaveOnboardingShortcut = async (shortcut: string) => {
     if (!config) return false;
     setOnboardingFirstDictationPassed(false);
     await saveConfig({ ...config, shortcut });
     return registerShortcut(shortcut);
-  };
-
-  const handleSaveOnboardingGroqKey = async (groqApiKey: string) => {
-    if (!config) return "";
-    setOnboardingFirstDictationPassed(false);
-    const result = await saveConfig({
-      ...config,
-      model_provider: "api",
-      groq_api_key: groqApiKey,
-    });
-    return result.secure_storage.state === "verified" ? "" : result.secure_storage.message;
   };
 
   const handleSaveOnboardingInputDevice = async (inputDevice: string | null) => {
@@ -2045,27 +2057,7 @@ function MainApp() {
     setOnboardingDictationState("processing");
     setOnboardingDictationMessage("Transcribing and checking the paste/copy fallback...");
     const completed = await stopAndPaste();
-    const result = lastDictationResultRef.current;
-    const passed =
-      completed &&
-      !!result &&
-      ["pasted", "copied", "copied_no_target", "copied_accessibility"].includes(result);
-
-    if (passed) {
-      setOnboardingFirstDictationPassed(true);
-      setOnboardingDictationState("success");
-      setOnboardingDictationMessage(
-        result === "pasted"
-          ? "First dictation worked and pasted into the target."
-          : "First dictation worked. Echo copied the transcript as a fallback."
-      );
-      await loadSetupStatus();
-      return;
-    }
-
-    setOnboardingFirstDictationPassed(false);
-    setOnboardingDictationState("error");
-    setOnboardingDictationMessage(errorMsg || "Try again with a short spoken sentence.");
+    await applyOnboardingDictationResult(completed);
   };
 
   const handleCompleteOnboarding = async () => {
@@ -2073,7 +2065,7 @@ function MainApp() {
     const latestStatus = await loadSetupStatus();
     const canComplete = latestStatus?.ready && !shortcutError && onboardingFirstDictationPassed;
     if (!canComplete) {
-      setErrorMsg("Finish setup and complete the first dictation test before leaving onboarding.");
+      setErrorMsg("Finish permissions and pass the hotkey test before leaving onboarding.");
       return;
     }
     await saveConfig({ ...config, onboarding_completed: true });
@@ -2104,6 +2096,21 @@ function MainApp() {
     setOnboardingDictationMessage("");
     setErrorMsg("");
     setActiveTab("dictate");
+  };
+
+  const handleOpenSettingsFromOnboarding = async () => {
+    if (!config) return;
+    if (onboardingCompletionTimerRef.current) {
+      clearTimeout(onboardingCompletionTimerRef.current);
+      onboardingCompletionTimerRef.current = null;
+    }
+    await saveConfig({ ...config, onboarding_completed: true });
+    setOnboardingCompletionVisible(false);
+    setOnboardingFirstDictationPassed(false);
+    setOnboardingDictationState("idle");
+    setOnboardingDictationMessage("");
+    setErrorMsg("");
+    setActiveTab("settings");
   };
 
   const handleSetupAction = async (check: SetupCheck) => {
@@ -2231,11 +2238,9 @@ function MainApp() {
                   firstDictationState={onboardingDictationState}
                   firstDictationMessage={onboardingDictationMessage}
                   onAction={handleOnboardingSetupAction}
-                  onChooseProvider={handleChooseOnboardingProvider}
-                  onChooseLocalModel={handleChooseOnboardingLocalModel}
                   onComplete={() => void handleCompleteOnboarding()}
+                  onOpenSettings={() => void handleOpenSettingsFromOnboarding()}
                   onRefresh={loadSetupStatus}
-                  onSaveGroqKey={handleSaveOnboardingGroqKey}
                   onSaveInputDevice={handleSaveOnboardingInputDevice}
                   onSaveShortcut={handleSaveOnboardingShortcut}
                   onSkip={() => void handleSkipOnboarding()}
@@ -2437,7 +2442,6 @@ function AuthGate({
   const isRecovery = authStatus === "passwordRecovery";
   const isPending = authStatus === "emailVerificationPending";
   const isError = authStatus === "error";
-  const isDev = import.meta.env.DEV;
 
   const submitEmail = (event: React.FormEvent) => {
     event.preventDefault();
@@ -2545,11 +2549,9 @@ function AuthGate({
         <Button fullWidth icon={<LogIn size={16} />} onClick={onGoogleSignIn} variant="primary">
           Sign in via browser
         </Button>
-        {isDev && (
-          <Button fullWidth onClick={onSkipSignIn} variant="secondary">
-            Skip sign in for dev
-          </Button>
-        )}
+        <Button fullWidth onClick={onSkipSignIn} variant="secondary">
+          Skip sign in
+        </Button>
         <div className="auth-tabs" role="tablist" aria-label="Email auth mode">
           <button
             className={mode === "login" ? "is-active" : ""}
@@ -2660,11 +2662,9 @@ function OnboardingPanel({
   firstDictationState,
   firstDictationMessage,
   onAction,
-  onChooseLocalModel,
-  onChooseProvider,
   onComplete,
+  onOpenSettings,
   onRefresh,
-  onSaveGroqKey,
   onSaveInputDevice,
   onSaveShortcut,
   onSkip,
@@ -2680,40 +2680,25 @@ function OnboardingPanel({
   firstDictationState: "idle" | "recording" | "processing" | "success" | "error";
   firstDictationMessage: string;
   onAction: (check: SetupCheck) => void;
-  onChooseLocalModel: (localModelSize: AppConfig["local_model_size"]) => Promise<void>;
-  onChooseProvider: (provider: AppConfig["model_provider"]) => Promise<void>;
   onComplete: () => void;
+  onOpenSettings: () => void;
   onRefresh: () => Promise<SetupStatus | null>;
-  onSaveGroqKey: (groqApiKey: string) => Promise<string>;
   onSaveInputDevice: (inputDevice: string | null) => Promise<void>;
   onSaveShortcut: (shortcut: string) => Promise<boolean>;
   onSkip: () => void;
   onStartFirstDictation: () => void;
   onStopFirstDictation: () => void;
 }) {
-  type OnboardingStep = "welcome" | "engine" | "engineSetup" | "hotkey" | "microphone" | "paste" | "dictation";
+  type OnboardingStep = "welcome" | "permissions" | "hotkeyTest";
   const steps: Array<{ id: OnboardingStep; label: string }> = [
     { id: "welcome", label: "Welcome" },
-    { id: "engine", label: "Engine" },
-    { id: "engineSetup", label: "Setup" },
-    { id: "hotkey", label: "Hotkey" },
-    { id: "microphone", label: "Mic" },
-    { id: "paste", label: "Paste" },
-    { id: "dictation", label: "Try" },
+    { id: "permissions", label: "Permissions" },
+    { id: "hotkeyTest", label: "Hotkey Test" },
   ];
   const [currentIndex, setCurrentIndex] = useState(0);
   const [shortcutDraft, setShortcutDraft] = useState(config.shortcut);
-  const [shortcutMessage, setShortcutMessage] = useState("Focus the field and press any key or key combo.");
+  const [shortcutMessage, setShortcutMessage] = useState("Focus the field to change the hotkey, or keep the default.");
   const [shortcutSaving, setShortcutSaving] = useState(false);
-  const [groqKey, setGroqKey] = useState(config.groq_api_key);
-  const [groqTest, setGroqTest] = useState<{ message: string; status: "idle" | "testing" | "success" | "error" | "warning" }>({
-    message: "",
-    status: "idle",
-  });
-  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
-  const [modelProgress, setModelProgress] = useState<DownloadProgress | null>(null);
-  const [modelError, setModelError] = useState("");
-  const [modelVerifying, setModelVerifying] = useState(false);
   const [devices, setDevices] = useState<string[]>([]);
   const [micDevice, setMicDevice] = useState(config.input_device ?? "");
   const [micTestState, setMicTestState] = useState<"idle" | "testing" | "success" | "fail">("idle");
@@ -2723,14 +2708,12 @@ function OnboardingPanel({
   const providerCheck = setupStatus?.checks.find((check) => check.id === "provider");
   const microphoneCheck = setupStatus?.checks.find((check) => check.id === "microphone");
   const pasteCheck = setupStatus?.checks.find((check) => check.id === "paste");
+  const formattedShortcut = formatShortcutForPlatform(config.shortcut, platform);
+  const canFinish = ready && !shortcutError && firstDictationPassed;
 
   useEffect(() => {
     setShortcutDraft(config.shortcut);
   }, [config.shortcut]);
-
-  useEffect(() => {
-    setGroqKey(config.groq_api_key);
-  }, [config.groq_api_key]);
 
   useEffect(() => {
     setMicDevice(config.input_device ?? "");
@@ -2746,61 +2729,6 @@ function OnboardingPanel({
       .then(setDevices)
       .catch(() => setDevices([]));
   }, []);
-
-  const checkSelectedModelStatus = useCallback(async () => {
-    const modelSize = config.local_model_size;
-    if (!HAS_TAURI) {
-      const previewStatus = {
-        downloaded: modelSize === "small",
-        downloading: false,
-        file_size_bytes: modelSize === "small" ? 487_601_967 : 0,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-        integrity_checked: modelSize === "small",
-        integrity_error: null,
-        model_size: modelSize,
-      };
-      setModelStatus(previewStatus);
-      return previewStatus;
-    }
-
-    try {
-      const status = await invoke<ModelStatus>("check_model_status", { modelSize });
-      setModelStatus(status);
-      return status;
-    } catch (e) {
-      setModelError(formatErrorMessage(e));
-      return null;
-    }
-  }, [config.local_model_size]);
-
-  useEffect(() => {
-    if (config.model_provider === "local") {
-      void checkSelectedModelStatus();
-    }
-  }, [checkSelectedModelStatus, config.model_provider]);
-
-  useEffect(() => {
-    if (!modelStatus?.downloading) {
-      setModelProgress(null);
-      return;
-    }
-
-    const interval = window.setInterval(async () => {
-      try {
-        const progress = await invoke<DownloadProgress>("get_model_download_progress");
-        setModelProgress(progress);
-        if (progress.percentage >= 100) {
-          window.clearInterval(interval);
-          await checkSelectedModelStatus();
-          await onRefresh();
-        }
-      } catch {
-        /* transient progress read failure */
-      }
-    }, 400);
-
-    return () => window.clearInterval(interval);
-  }, [checkSelectedModelStatus, modelStatus?.downloading, onRefresh]);
 
   const goNext = () => setCurrentIndex((index) => Math.min(index + 1, steps.length - 1));
   const goBack = () => setCurrentIndex((index) => Math.max(index - 1, 0));
@@ -2828,132 +2756,6 @@ function OnboardingPanel({
       })
       .catch((e) => setShortcutMessage(formatErrorMessage(e)))
       .finally(() => setShortcutSaving(false));
-  };
-
-  const handleTestGroq = async () => {
-    const trimmedKey = groqKey.trim();
-    if (!trimmedKey) {
-      setGroqTest({ message: "Enter a Groq API key before testing Cloud transcription.", status: "error" });
-      return;
-    }
-    if (!trimmedKey.startsWith("gsk_")) {
-      setGroqTest({ message: "Groq API keys usually start with gsk_. Check the key and try again.", status: "error" });
-      return;
-    }
-
-    setGroqTest({ message: "Saving securely and testing Groq...", status: "testing" });
-    try {
-      const secureMessage = await onSaveGroqKey(trimmedKey);
-      const readiness = HAS_TAURI
-        ? await invoke<GroqReadiness>("test_groq_connection", {
-            config: { ...config, model_provider: "api", groq_api_key: trimmedKey },
-          })
-        : {
-            ok: true,
-            message: "Groq connection looks good in preview mode.",
-            transcription_model_ok: true,
-            cleanup_model_ok: true,
-          };
-      setGroqTest({
-        message: [secureMessage, readiness.message].filter(Boolean).join(" ") || "Cloud transcription is ready.",
-        status: readiness.ok ? "success" : "warning",
-      });
-      await onRefresh();
-    } catch (e) {
-      setGroqTest({ message: formatErrorMessage(e), status: "error" });
-    }
-  };
-
-  const handleDownloadSelectedModel = async () => {
-    const modelSize = config.local_model_size;
-    setModelError("");
-    if (!HAS_TAURI) {
-      setModelStatus({
-        downloaded: true,
-        downloading: false,
-        file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-        integrity_checked: true,
-        integrity_error: null,
-        model_size: modelSize,
-      });
-      await onRefresh();
-      return;
-    }
-
-    setModelStatus((prev) =>
-      prev
-        ? { ...prev, downloading: true }
-        : {
-            downloaded: false,
-            downloading: true,
-            file_size_bytes: 0,
-            expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-            integrity_checked: false,
-            integrity_error: null,
-            model_size: modelSize,
-          }
-    );
-    try {
-      await invoke("download_whisper_model", { modelSize });
-      await checkSelectedModelStatus();
-      await onRefresh();
-    } catch (e) {
-      setModelError(formatErrorMessage(e));
-      await checkSelectedModelStatus();
-    }
-  };
-
-  const handleVerifySelectedModel = async () => {
-    const modelSize = config.local_model_size;
-    setModelError("");
-    setModelVerifying(true);
-    try {
-      const status = HAS_TAURI
-        ? await invoke<ModelStatus>("verify_model_status", { modelSize })
-        : {
-            downloaded: true,
-            downloading: false,
-            file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-            expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-            integrity_checked: true,
-            integrity_error: null,
-            model_size: modelSize,
-          };
-      setModelStatus(status);
-      if (status.integrity_error) setModelError(status.integrity_error);
-      await onRefresh();
-    } catch (e) {
-      setModelError(formatErrorMessage(e));
-    } finally {
-      setModelVerifying(false);
-    }
-  };
-
-  const handleRemoveSelectedModel = async () => {
-    const modelSize = config.local_model_size;
-    setModelError("");
-    if (!HAS_TAURI) {
-      setModelStatus({
-        downloaded: false,
-        downloading: false,
-        file_size_bytes: 0,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-        integrity_checked: false,
-        integrity_error: null,
-        model_size: modelSize,
-      });
-      await onRefresh();
-      return;
-    }
-
-    try {
-      await invoke("delete_whisper_model", { modelSize });
-      await checkSelectedModelStatus();
-      await onRefresh();
-    } catch (e) {
-      setModelError(formatErrorMessage(e));
-    }
   };
 
   const handleMicDeviceChange = async (value: string) => {
@@ -2986,279 +2788,136 @@ function OnboardingPanel({
   const renderStep = () => {
     if (currentStep.id === "welcome") {
       return (
-        <>
-          <Chip tone="accent">Step 1 of {steps.length}</Chip>
-          <h3>Get Echo ready</h3>
-          <p>
-            You will choose a transcription engine, pick the hotkey that starts dictation, clear the
-            setup checks, then try one dictation.
-          </p>
-          <div className="onboarding-summary-grid">
-            <span><Sparkles size={15} /> Transcription engine</span>
-            <span><Keyboard size={15} /> Hotkey</span>
-            <span><Mic size={15} /> Mic and paste</span>
+        <div className="onboarding-welcome">
+          <div className="onboarding-welcome__backdrop" aria-hidden>
+            <img src={echoLogoMark} alt="" />
           </div>
-        </>
+          <img className="onboarding-welcome__logo" src={echoLogoMark} alt="" />
+          <h3>Welcome to Echo</h3>
+          <Button icon={<ArrowRight size={16} />} onClick={goNext} variant="primary">
+            Continue
+          </Button>
+        </div>
       );
     }
 
-    if (currentStep.id === "engine") {
-      return (
-        <>
-          <Chip tone="accent">Step 2 of {steps.length}</Chip>
-          <h3>Transcription Engine</h3>
-          <p>
-            Use Cloud for the fastest setup, or download a local Whisper model for offline
-            transcription on this computer.
-          </p>
-          <div className="onboarding-provider-grid">
-            <button
-              className={`onboarding-provider${config.model_provider === "api" ? " is-active" : ""}`}
-              onClick={() => void onChooseProvider("api")}
-              type="button"
-            >
-              <Cloud size={18} />
-              <strong>Cloud</strong>
-              <span>Fast online transcription with a Groq API key saved in secure storage.</span>
-            </button>
-            <button
-              className={`onboarding-provider${config.model_provider === "local" ? " is-active" : ""}`}
-              onClick={() => void onChooseProvider("local")}
-              type="button"
-            >
-              <Cpu size={18} />
-              <strong>Download Local</strong>
-              <span>Offline Whisper transcription after downloading a model.</span>
-            </button>
-          </div>
-        </>
-      );
-    }
-
-    if (currentStep.id === "engineSetup") {
-      if (config.model_provider === "api") {
-        return (
-          <>
-            <Chip tone="accent">Step 3 of {steps.length}</Chip>
-            <h3>Cloud Setup</h3>
-            <p>Enter your Groq API key. Echo saves it in secure OS storage and tests model access.</p>
-            <label className="onboarding-hotkey-field">
-              <span>Groq API Key</span>
-              <input
-                className={`ui-input${groqTest.status === "error" ? " ui-input--error" : ""}`}
-                onChange={(event) => setGroqKey(event.target.value)}
-                placeholder="gsk_..."
-                type="password"
-                value={groqKey}
-              />
-            </label>
-            <Button
-              disabled={groqTest.status === "testing"}
-              fullWidth
-              icon={<RefreshCw size={16} />}
-              onClick={() => void handleTestGroq()}
-              variant="primary"
-            >
-              {groqTest.status === "testing" ? "Testing Cloud" : "Save and Test Cloud"}
-            </Button>
-            {groqTest.message && (
-              <Alert tone={groqTest.status === "success" ? "success" : groqTest.status === "warning" ? "warning" : "error"}>
-                {groqTest.message}
-              </Alert>
-            )}
-            {providerCheck && providerCheck.status !== "ok" && (
-              <Alert tone="warning">{providerCheck.message}</Alert>
-            )}
-          </>
-        );
-      }
-
-      const expectedSize =
-        modelStatus?.expected_size_bytes || (config.local_model_size === "small" ? 487_601_967 : 1_533_763_059);
-      return (
-        <>
-          <Chip tone="accent">Step 3 of {steps.length}</Chip>
-          <h3>Download Local Model</h3>
-          <p>Choose a Whisper model to keep transcription offline after download.</p>
-          <div className="onboarding-model-choice" role="group" aria-label="Local model size">
-            {(["small", "medium"] as const).map((modelSize) => (
-              <button
-                className={config.local_model_size === modelSize ? "is-active" : ""}
-                key={modelSize}
-                onClick={() => void onChooseLocalModel(modelSize)}
-                type="button"
-              >
-                <strong>{modelSize === "small" ? "Small" : "Medium"}</strong>
-                <span>{modelSize === "small" ? "Faster, smaller download" : "More accurate, larger download"}</span>
-              </button>
-            ))}
-          </div>
-          <div className="onboarding-status-card">
-            <strong>Whisper {config.local_model_size}</strong>
-            <span>
-              {modelStatus?.downloaded
-                ? `Ready on disk (${formatBytes(modelStatus.file_size_bytes)})`
-                : `${formatBytes(expectedSize)} download required`}
-            </span>
-          </div>
-          {modelStatus?.downloading && (
-            <div className="download-progress">
-              <Progress value={modelProgress?.percentage} />
-              <span>
-                {modelProgress
-                  ? `${formatBytes(modelProgress.bytes_downloaded)} / ${formatBytes(modelProgress.total_bytes || expectedSize)}`
-                  : "Starting download..."}
-              </span>
-            </div>
-          )}
-          <div className="onboarding-inline-actions">
-            {!modelStatus?.downloaded && (
-              <Button
-                disabled={!!modelStatus?.downloading}
-                onClick={() => void handleDownloadSelectedModel()}
-                variant="primary"
-              >
-                {modelStatus?.downloading ? "Downloading" : "Download Model"}
-              </Button>
-            )}
-            {modelStatus?.downloaded && !modelStatus.integrity_checked && (
-              <Button disabled={modelVerifying} onClick={() => void handleVerifySelectedModel()} variant="secondary">
-                {modelVerifying ? "Verifying" : "Verify Model"}
-              </Button>
-            )}
-            {modelStatus?.downloaded && (
-              <Button onClick={() => void handleRemoveSelectedModel()} variant="secondary">
-                Remove
-              </Button>
-            )}
-          </div>
-          {providerCheck?.status === "ok" && <Alert tone="success">{providerCheck.message}</Alert>}
-          {(modelError || providerCheck?.status === "error") && (
-            <Alert tone="error">{modelError || providerCheck?.message}</Alert>
-          )}
-        </>
-      );
-    }
-
-    if (currentStep.id === "hotkey") {
-      return (
-        <>
-          <Chip tone="accent">Step 4 of {steps.length}</Chip>
-          <h3>Choose Hotkey</h3>
-          <p>
-            Press the single key or key combo you want Echo to use globally. Some choices may be
-            reserved by the system; Echo will tell you if registration fails.
-          </p>
-          <label className="onboarding-hotkey-field">
-            <span>Hotkey</span>
-            <input
-              className={`ui-input${shortcutError ? " ui-input--error" : ""}`}
-              onFocus={() => setShortcutMessage("Press any key or key combo. Escape can be captured here.")}
-              onKeyDown={handleShortcutKeyDown}
-              readOnly
-              value={shortcutDraft}
-            />
-          </label>
-          <Alert tone={shortcutError ? "error" : shortcutSaving ? "info" : "success"}>
-            {shortcutError || shortcutMessage}
-          </Alert>
-        </>
-      );
-    }
-
-    if (currentStep.id === "microphone") {
+    if (currentStep.id === "permissions") {
       return (
         <>
           <div className="onboarding-card__header">
             <div>
-              <Chip tone="accent">Step 5 of {steps.length}</Chip>
-              <h3>Microphone Setup</h3>
+              <Chip tone="accent">Step 2 of {steps.length}</Chip>
+              <h3>Microphone and Paste</h3>
             </div>
             <IconButton label="Refresh setup checks" onClick={() => void onRefresh()}>
               <RefreshCw size={16} />
             </IconButton>
           </div>
-          <p>Choose the microphone Echo should listen to, then run a quick level test.</p>
-          <label className="onboarding-hotkey-field">
-            <span>Input Device</span>
-            <select
-              className="ui-select"
-              onChange={(event) => void handleMicDeviceChange(event.target.value)}
-              value={micDevice}
-            >
-              <option value="">System Default</option>
-              {devices.map((device) => (
-                <option key={device} value={device}>
-                  {device}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="onboarding-inline-actions">
-            <Button icon={<Mic size={16} />} onClick={() => void handleTestMic()} variant="primary">
-              {micTestState === "testing" ? "Listening" : "Test Microphone"}
-            </Button>
-            {microphoneCheck?.action_label && (
-              <Button onClick={() => onAction(microphoneCheck)} variant="secondary">
-                {microphoneCheck.action_label}
-              </Button>
-            )}
-          </div>
-          {(micTestState === "testing" || micTestState === "success") && (
-            <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
-          )}
-          <Alert tone={micTestState === "fail" ? "error" : microphoneCheck?.status === "ok" || micTestState === "success" ? "success" : "warning"}>
-            {micTestState === "success"
-              ? "Microphone is working."
-              : micTestState === "fail"
-                ? "No audio detected. Check the selected device and system microphone permission."
-                : microphoneCheck?.message || "Run the microphone test before continuing."}
-          </Alert>
-        </>
-      );
-    }
+          <div className="onboarding-permission-grid">
+            <div className="onboarding-permission-card">
+              <div className="onboarding-permission-card__title">
+                <Mic size={17} />
+                <strong>Microphone</strong>
+              </div>
+              <p>Choose the microphone Echo should listen to, then run a quick level test.</p>
+              <label className="onboarding-hotkey-field">
+                <span>Input Device</span>
+                <select
+                  className="ui-select"
+                  onChange={(event) => void handleMicDeviceChange(event.target.value)}
+                  value={micDevice}
+                >
+                  <option value="">System Default</option>
+                  {devices.map((device) => (
+                    <option key={device} value={device}>
+                      {device}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="onboarding-inline-actions">
+                <Button icon={<Mic size={16} />} onClick={() => void handleTestMic()} variant="primary">
+                  {micTestState === "testing" ? "Listening" : "Test Microphone"}
+                </Button>
+                {microphoneCheck?.action_label && (
+                  <Button onClick={() => onAction(microphoneCheck)} variant="secondary">
+                    {microphoneCheck.action_label}
+                  </Button>
+                )}
+              </div>
+              {(micTestState === "testing" || micTestState === "success") && (
+                <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
+              )}
+              <Alert tone={micTestState === "fail" ? "error" : microphoneCheck?.status === "ok" || micTestState === "success" ? "success" : "warning"}>
+                {micTestState === "success"
+                  ? "Microphone is working."
+                  : micTestState === "fail"
+                    ? "No audio detected. Check the selected device and system microphone permission."
+                    : microphoneCheck?.message || "Run the microphone test before continuing."}
+              </Alert>
+            </div>
 
-    if (currentStep.id === "paste") {
-      return (
-        <>
-          <Chip tone="accent">Step 6 of {steps.length}</Chip>
-          <h3>{platform === "macos" ? "Paste Permission" : "Paste Readiness"}</h3>
-          <p>
-            {platform === "macos"
-              ? "Echo needs Accessibility permission to paste automatically. If permission is blocked, it will copy the transcript instead."
-              : "On Windows, Echo uses clipboard write and paste simulation where available, with copy fallback if paste cannot complete."}
-          </p>
-          <div className="onboarding-status-card">
-            <strong>{pasteCheck?.label ?? "Paste readiness"}</strong>
-            <span>{pasteCheck?.message ?? "Refresh setup checks to confirm paste readiness."}</span>
+            <div className="onboarding-permission-card">
+              <div className="onboarding-permission-card__title">
+                <Copy size={17} />
+                <strong>{platform === "macos" ? "Paste Permission" : "Paste Readiness"}</strong>
+              </div>
+              <p>
+                {platform === "macos"
+                  ? "Enable Accessibility so Echo can paste automatically after dictation."
+                  : "Echo uses clipboard write and paste simulation where available."}
+              </p>
+              <div className="onboarding-status-card">
+                <strong>{pasteCheck?.label ?? "Paste readiness"}</strong>
+                <span>{pasteCheck?.message ?? "Refresh setup checks to confirm paste readiness."}</span>
+              </div>
+              <div className="onboarding-inline-actions">
+                {platform === "macos" && (
+                  <Button onClick={() => pasteCheck && onAction(pasteCheck)} variant="primary">
+                    Open Accessibility
+                  </Button>
+                )}
+                <Button onClick={() => void onRefresh()} variant="secondary">
+                  Refresh Checks
+                </Button>
+              </div>
+              <Alert tone={pasteCheck?.status === "ok" ? "success" : platform === "macos" ? "warning" : "info"}>
+                {platform === "macos"
+                  ? "If Accessibility is unavailable, Echo keeps the transcript safe on the clipboard."
+                  : "No macOS Accessibility permission is needed on Windows."}
+              </Alert>
+            </div>
           </div>
-          <div className="onboarding-inline-actions">
-            {platform === "macos" && (
-              <Button onClick={() => pasteCheck && onAction(pasteCheck)} variant="primary">
-                Open Accessibility
-              </Button>
-            )}
-            <Button onClick={() => void onRefresh()} variant="secondary">
-              Refresh Checks
-            </Button>
-          </div>
-          <Alert tone={pasteCheck?.status === "ok" ? "success" : platform === "macos" ? "warning" : "info"}>
-            {platform === "macos"
-              ? "When Accessibility is unavailable, Echo keeps the transcript safe on the clipboard."
-              : "No macOS Accessibility permission is needed on Windows."}
-          </Alert>
         </>
       );
     }
 
     return (
       <>
-        <Chip tone="accent">Step 7 of {steps.length}</Chip>
-        <h3>Try your first dictation</h3>
+        <Chip tone="accent">Step 3 of {steps.length}</Chip>
+        <h3>Hotkey Test</h3>
         <p>
-          Focus a text field in another app, come back here if needed, then start recording. Echo
-          will paste into the target or copy the transcript if paste is unavailable.
+          Press and hold <strong>{formattedShortcut}</strong>, say a short sentence, then release
+          the hotkey to test Echo.
         </p>
+        <div className="onboarding-hotkey-test">
+          <Keyboard size={22} />
+          <strong>{formattedShortcut}</strong>
+          <span>{firstDictationState === "recording" ? "Listening" : firstDictationState === "processing" ? "Processing" : "Ready to test"}</span>
+        </div>
+        <label className="onboarding-hotkey-field">
+          <span>Hotkey</span>
+          <input
+            className={`ui-input${shortcutError ? " ui-input--error" : ""}`}
+            onFocus={() => setShortcutMessage("Press any key or key combo. Escape can be captured here.")}
+            onKeyDown={handleShortcutKeyDown}
+            readOnly
+            value={formatShortcutForPlatform(shortcutDraft, platform)}
+          />
+        </label>
+        <Alert tone={shortcutError ? "error" : shortcutSaving ? "info" : "success"}>
+          {shortcutError || shortcutMessage}
+        </Alert>
         {firstDictationState === "recording" ? (
           <Button fullWidth icon={<Square size={16} />} onClick={onStopFirstDictation} variant="primary">
             Stop Test
@@ -3271,7 +2930,7 @@ function OnboardingPanel({
             onClick={onStartFirstDictation}
             variant="primary"
           >
-            {firstDictationState === "processing" ? "Processing" : "Start Test Dictation"}
+            {firstDictationState === "processing" ? "Processing" : "Start Test Without Hotkey"}
           </Button>
         )}
         {firstDictationMessage && (
@@ -3279,9 +2938,19 @@ function OnboardingPanel({
             {firstDictationMessage}
           </Alert>
         )}
-        {(!ready || shortcutError || !firstDictationPassed) && (
+        {providerCheck && providerCheck.status !== "ok" && (
           <Alert tone="warning">
-            Complete setup and pass the first dictation test before opening Echo.
+            {providerCheck?.message || "Set up Cloud or Local transcription in Settings before the hotkey test can run."}
+            <div className="onboarding-alert-action">
+              <Button onClick={onOpenSettings} variant="secondary">
+                Open Settings
+              </Button>
+            </div>
+          </Alert>
+        )}
+        {providerCheck?.status === "ok" && (!ready || shortcutError || !firstDictationPassed) && (
+          <Alert tone="warning">
+            Pass the hotkey test before finishing onboarding.
           </Alert>
         )}
         {errorMsg && <Alert tone="error">{errorMsg}</Alert>}
@@ -3342,13 +3011,15 @@ function OnboardingPanel({
           </Button>
         </div>
         <div className="onboarding-actions__side onboarding-actions__side--end">
-          <Button
-            disabled={currentIndex === steps.length - 1 && (!ready || !!shortcutError || !firstDictationPassed)}
-            onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
-            variant="primary"
-          >
-            {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
-          </Button>
+          {currentStep.id !== "welcome" && (
+            <Button
+              disabled={currentIndex === steps.length - 1 && !canFinish}
+              onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
+              variant="primary"
+            >
+              {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
+            </Button>
+          )}
         </div>
       </div>
     </section>
@@ -4450,6 +4121,10 @@ function StandaloneNotepadWindow() {
   const [copied, setCopied] = useState(false);
   const [dictationState, setDictationState] = useState<NotepadDictationState>("idle");
   const [windowReady, setWindowReady] = useState(!HAS_TAURI);
+  const [appearanceTheme, setAppearanceTheme] = useState<AppearanceTheme>(
+    MOCK_CONFIG.appearance_theme
+  );
+  const resolvedTheme = useResolvedTheme(appearanceTheme);
 
   const updateNote = useCallback((changes: Partial<NotepadNote>) => {
     setNote((current) => (current ? { ...current, ...changes } : current));
@@ -4549,6 +4224,29 @@ function StandaloneNotepadWindow() {
     return () => {
       emit("notepad-window-focus", false).catch(() => {});
       unlistenFocus?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!HAS_TAURI) {
+      setAppearanceTheme(MOCK_CONFIG.appearance_theme);
+      return;
+    }
+
+    let unlistenTheme: (() => void) | null = null;
+
+    invoke<AppConfig>("get_config")
+      .then((cfg) => setAppearanceTheme(normalizeTheme(cfg.appearance_theme)))
+      .catch(() => setAppearanceTheme("system"));
+
+    listen<AppearanceTheme>("appearance-theme-changed", (event) => {
+      setAppearanceTheme(normalizeTheme(event.payload));
+    }).then((unlisten) => {
+      unlistenTheme = unlisten;
+    });
+
+    return () => {
+      unlistenTheme?.();
     };
   }, []);
 
@@ -4769,7 +4467,7 @@ function StandaloneNotepadWindow() {
             : "";
 
   return (
-    <main className="window-root window-root--notepad" data-theme="light" onPointerDownCapture={startWindowDrag}>
+    <main className="window-root window-root--notepad" data-theme={resolvedTheme} onPointerDownCapture={startWindowDrag}>
       <div
         className="standalone-note-drag-zone"
         data-tauri-drag-region

@@ -158,7 +158,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             groq_api_key: String::new(),
-            shortcut: "CommandOrControl+Shift+Space".to_string(),
+            shortcut: "CommandOrControl+D".to_string(),
             transcription_model: "whisper-large-v3-turbo".to_string(),
             cleanup_model: "llama-3.1-8b-instant".to_string(),
             cleanup_enabled: true,

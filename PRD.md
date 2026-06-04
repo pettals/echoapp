@@ -11,7 +11,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 ## Core Success Criteria
 
 - Users can create or access an Echo account with either Google sign-in or email/password authentication.
-- First-run setup guides users through microphone readiness, Accessibility/paste permissions, provider choice, shortcut setup, and mic validation.
+- First-run setup welcomes users, guides microphone and Accessibility/paste permissions, and validates the default hotkey dictation loop; provider/model setup remains visible in Settings when needed.
 - Dictation works end to end: capture focus, record, transcribe, optionally clean up, paste or copy as fallback, and save history.
 - During shortcut dictation, the Dynamic Island HUD shows the target app icon, live Groq partial transcript text, and a compact waveform; local Whisper shows target/waveform while recording and the final transcript after release.
 - macOS feels native: menu bar behavior, hidden-window mode, dock indicator, permission messaging, and a clear signing/notarization path.
@@ -48,7 +48,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Sessions must restore on app launch and persist securely without storing credentials in plaintext config.
 - Users must be able to sign out from Settings, after which local-only data remains on device unless a later sync feature explicitly changes that behavior.
 - Authentication must not weaken local privacy expectations: transcript history, Notepad notes, and dictation insights remain local in v1.
-- First run must not strand users in Settings without a clear next action.
+- First run must not strand users without a clear next action; if provider/model setup is missing, onboarding must point users to Settings explicitly.
 - Echo must expose a visible setup state for mic, shortcut, provider/model, and paste permissions.
 - Auto-paste must gracefully fall back to copying without losing the transcript.
 - Groq dictation must stream low-latency rolling partial transcripts into the Dynamic Island while preserving the final full-recording transcription as the source of truth for paste/history.

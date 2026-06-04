@@ -168,7 +168,7 @@ fn status_error(status: StatusCode, body: &str) -> GroqApiError {
             false,
         ),
         StatusCode::PAYLOAD_TOO_LARGE => (
-            "The recording is too large for Groq direct upload. Try a shorter recording.".to_string(),
+            "Groq rejected this audio chunk because it is too large for direct upload.".to_string(),
             false,
         ),
         StatusCode::TOO_MANY_REQUESTS => (
@@ -304,7 +304,7 @@ async fn preflight_audio_file(audio_path: &Path) -> Result<(), GroqApiError> {
 
     if metadata.len() > GROQ_DIRECT_UPLOAD_LIMIT_BYTES {
         return Err(GroqApiError::audio_preflight(format!(
-            "Recording is too large for Groq direct upload ({} MB max). Try a shorter recording.",
+            "Recording is too large for one Groq direct upload ({} MB max).",
             GROQ_DIRECT_UPLOAD_LIMIT_BYTES / 1024 / 1024
         )));
     }

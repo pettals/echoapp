@@ -532,6 +532,81 @@ fn merge_partial_transcript(current: &str, next: &str) -> String {
     format!("{current} {next}")
 }
 
+async fn transcribe_cloud_chunked(
+    api_key: &str,
+    audio_path: &std::path::Path,
+    model: &str,
+) -> Result<String, GroqApiError> {
+    let chunk_paths = audio::split_wav_for_cloud(audio_path, groq::GROQ_DIRECT_UPLOAD_LIMIT_BYTES)
+        .map_err(|message| GroqApiError {
+            status: None,
+            code: "audio_chunking_failed".to_string(),
+            message,
+            retryable: false,
+        })?;
+    let owns_chunks = !(chunk_paths.len() == 1 && chunk_paths[0] == audio_path);
+    let mut transcript = String::new();
+    let mut first_error: Option<GroqApiError> = None;
+
+    for chunk_path in &chunk_paths {
+        match groq::transcribe(api_key, chunk_path, model).await {
+            Ok(chunk_text) => {
+                transcript = merge_partial_transcript(&transcript, &chunk_text);
+            }
+            Err(e) => {
+                first_error = Some(e);
+                break;
+            }
+        }
+    }
+
+    if owns_chunks {
+        for chunk_path in &chunk_paths {
+            let _ = tokio::fs::remove_file(chunk_path).await;
+        }
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
+    if transcript.trim().is_empty() {
+        return Err(GroqApiError {
+            status: None,
+            code: "empty_response".to_string(),
+            message: "Groq returned no transcript. Try again.".to_string(),
+            retryable: true,
+        });
+    }
+
+    Ok(transcript)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_partial_transcript_removes_overlapping_words() {
+        let merged = merge_partial_transcript(
+            "The quick brown fox jumps over the lazy dog",
+            "over the lazy dog and lands softly",
+        );
+
+        assert_eq!(
+            merged,
+            "The quick brown fox jumps over the lazy dog and lands softly"
+        );
+    }
+
+    #[test]
+    fn merge_partial_transcript_appends_distinct_chunks() {
+        let merged = merge_partial_transcript("First sentence.", "Second sentence.");
+
+        assert_eq!(merged, "First sentence. Second sentence.");
+    }
+}
+
 fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppError> {
     if state.recording_active.load(Ordering::SeqCst) {
         return Ok(());
@@ -1138,7 +1213,7 @@ async fn transcribe_audio(audio_path: String) -> Result<String, AppError> {
                     Some("Open Settings"),
                 ));
             }
-            groq::transcribe(&cfg.groq_api_key, &path, &cfg.transcription_model)
+            transcribe_cloud_chunked(&cfg.groq_api_key, &path, &cfg.transcription_model)
                 .await
                 .map_err(|e| AppError::new(e.code, e.message, e.retryable, None))
         }
@@ -1494,10 +1569,10 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window_internal(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())

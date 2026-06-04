@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::{WavReader, WavSpec, WavWriter};
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,8 @@ const LEVEL_RMS_GAIN: f32 = 9.0;
 const LEVEL_PEAK_GAIN: f32 = 1.4;
 const LIVE_CHUNK_SECS: f32 = 1.5;
 const LIVE_CHUNK_OVERLAP_SECS: f32 = 0.3;
+const CLOUD_CHUNK_TARGET_BYTES: u64 = 22 * 1024 * 1024;
+const CLOUD_CHUNK_OVERLAP_SECS: f32 = 1.0;
 
 type SharedWavWriter = Arc<Mutex<Option<WavWriter<BufWriter<std::fs::File>>>>>;
 type SharedLiveChunker = Arc<Mutex<Option<LiveChunker>>>;
@@ -446,6 +448,109 @@ pub fn write_i16_wav_chunk(
     Ok(temp_path)
 }
 
+fn bytes_per_frame(spec: WavSpec) -> Result<usize, String> {
+    let bytes_per_sample = (spec.bits_per_sample as usize)
+        .checked_add(7)
+        .ok_or("Unsupported WAV bit depth.".to_string())?
+        / 8;
+    let channels = spec.channels.max(1) as usize;
+    let bytes = bytes_per_sample
+        .checked_mul(channels)
+        .ok_or("WAV frame size overflow.".to_string())?;
+    if bytes == 0 {
+        return Err("Unsupported WAV frame size.".to_string());
+    }
+    Ok(bytes)
+}
+
+fn cloud_chunk_frame_plan(
+    total_frames: usize,
+    sample_rate: u32,
+    bytes_per_frame: usize,
+    target_bytes: u64,
+    overlap_secs: f32,
+) -> Result<Vec<(usize, usize)>, String> {
+    if total_frames == 0 {
+        return Ok(Vec::new());
+    }
+    if sample_rate == 0 {
+        return Err("WAV sample rate is zero.".to_string());
+    }
+
+    let max_frames_by_size = (target_bytes as usize)
+        .checked_div(bytes_per_frame)
+        .unwrap_or(0)
+        .max(1);
+    let min_chunk_frames = sample_rate as usize;
+    let chunk_frames = max_frames_by_size.max(min_chunk_frames);
+    let overlap_frames =
+        ((sample_rate as f32 * overlap_secs).round() as usize).min(chunk_frames.saturating_sub(1));
+    let step_frames = chunk_frames.saturating_sub(overlap_frames).max(1);
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < total_frames {
+        let end = start.saturating_add(chunk_frames).min(total_frames);
+        chunks.push((start, end));
+        if end == total_frames {
+            break;
+        }
+        start = start.saturating_add(step_frames);
+    }
+    Ok(chunks)
+}
+
+pub fn split_wav_for_cloud(audio_path: &Path, max_bytes: u64) -> Result<Vec<PathBuf>, String> {
+    let metadata = std::fs::metadata(audio_path)
+        .map_err(|e| format!("Could not read recording before chunking: {e}"))?;
+    if metadata.len() <= max_bytes {
+        return Ok(vec![audio_path.to_path_buf()]);
+    }
+
+    let reader = WavReader::open(audio_path).map_err(|e| format!("WAV open error: {e}"))?;
+    let spec = reader.spec();
+    if spec.sample_rate == 0 || spec.channels == 0 {
+        return Err("Recording has an invalid WAV format.".to_string());
+    }
+
+    let samples = read_wav_samples(reader)?;
+    let channels = spec.channels as usize;
+    if samples.is_empty() {
+        return Err("Recording is empty. Try recording again.".to_string());
+    }
+
+    let total_frames = samples.len().div_ceil(channels);
+    let plan = cloud_chunk_frame_plan(
+        total_frames,
+        spec.sample_rate,
+        bytes_per_frame(spec)?,
+        CLOUD_CHUNK_TARGET_BYTES.min(max_bytes).max(1),
+        CLOUD_CHUNK_OVERLAP_SECS,
+    )?;
+
+    let mut chunk_paths = Vec::with_capacity(plan.len());
+    for (start_frame, end_frame) in plan {
+        let start_sample = start_frame.saturating_mul(channels);
+        let end_sample = end_frame.saturating_mul(channels).min(samples.len());
+        if start_sample >= end_sample {
+            continue;
+        }
+
+        let chunk = samples[start_sample..end_sample]
+            .iter()
+            .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect::<Vec<_>>();
+        let path = write_i16_wav_chunk(&chunk, spec.sample_rate, spec.channels)?;
+        chunk_paths.push(path);
+    }
+
+    if chunk_paths.is_empty() {
+        return Err("Recording could not be split for cloud transcription.".to_string());
+    }
+
+    Ok(chunk_paths)
+}
+
 fn write_samples_and_level(
     samples: &[i16],
     writer: &SharedWavWriter,
@@ -598,4 +703,67 @@ fn run_recording(
     }
 
     Ok(temp_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_test_wav(frames: usize, sample_rate: u32, channels: u16) -> NamedTempFile {
+        let file = NamedTempFile::with_suffix(".wav").unwrap();
+        let spec = WavSpec {
+            channels,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut writer = WavWriter::create(file.path(), spec).unwrap();
+            for frame in 0..frames {
+                for channel in 0..channels {
+                    let sample = ((frame + channel as usize) % 512) as i16;
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+            writer.finalize().unwrap();
+        }
+        file
+    }
+
+    #[test]
+    fn cloud_chunk_plan_uses_overlap_between_chunks() {
+        let chunks = cloud_chunk_frame_plan(250, 100, 2, 200, 0.25).unwrap();
+
+        assert_eq!(chunks, vec![(0, 100), (75, 175), (150, 250)]);
+    }
+
+    #[test]
+    fn cloud_chunk_plan_keeps_small_recording_single_chunk() {
+        let chunks = cloud_chunk_frame_plan(90, 100, 2, 200, 0.25).unwrap();
+
+        assert_eq!(chunks, vec![(0, 90)]);
+    }
+
+    #[test]
+    fn split_wav_for_cloud_returns_original_when_under_limit() {
+        let wav = write_test_wav(50, 100, 1);
+        let paths = split_wav_for_cloud(wav.path(), 4096).unwrap();
+
+        assert_eq!(paths, vec![wav.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn split_wav_for_cloud_writes_temp_chunks_for_oversized_recording() {
+        let wav = write_test_wav(250, 100, 1);
+        let paths = split_wav_for_cloud(wav.path(), 220).unwrap();
+
+        assert!(paths.len() > 1);
+        assert!(paths.iter().all(|path| path != wav.path()));
+        let original_size = std::fs::metadata(wav.path()).unwrap().len();
+        for path in paths {
+            let metadata = std::fs::metadata(&path).unwrap();
+            assert!(metadata.len() < original_size);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 }
