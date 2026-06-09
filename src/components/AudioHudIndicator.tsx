@@ -12,6 +12,8 @@ export interface AudioHudIndicatorProps {
   errorMessage?: string;
   canConfirm?: boolean;
   completeLabel?: string;
+  statusLabel?: string;
+  livePlaceholder?: string;
   shortcutLabel?: string;
   notepadLabel?: string;
   copyText?: string;
@@ -97,6 +99,8 @@ export default function AudioHudIndicator({
   errorMessage,
   canConfirm = true,
   completeLabel,
+  statusLabel,
+  livePlaceholder,
   shortcutLabel = "Command + D",
   notepadLabel = "Notepad",
   copyText = "",
@@ -112,7 +116,7 @@ export default function AudioHudIndicator({
 }: AudioHudIndicatorProps) {
   const reduceMotion = useReducedMotion();
   const clampedLevel = Math.min(Math.max(level, 0), 1);
-  const label = stateLabel(state, completeLabel);
+  const label = statusLabel ?? stateLabel(state, completeLabel);
   const [activeAction, setActiveAction] = useState<IdleAction | null>(null);
   const countdownSeconds = Math.ceil(copyCountdownMs / 1000);
   const copyProgress = Math.max(0, Math.min(copyCountdownMs / 5000, 1));
@@ -124,7 +128,7 @@ export default function AudioHudIndicator({
     hasLiveTranscript && liveWords.length > maxVisibleWords
       ? liveWords.slice(-maxVisibleWords)
       : liveWords;
-  const livePlaceholder = state === "processing" ? "Transcribing" : "Listening";
+  const livePlaceholderText = livePlaceholder ?? (state === "processing" ? "Transcribing" : "Listening");
   const idleExpanded = state === "idle" && expanded;
   const visibleAction = idleExpanded ? activeAction : null;
   const islandVariant = state === "idle" ? (idleExpanded ? "idleExpanded" : "idleCollapsed") : state;
@@ -454,7 +458,7 @@ export default function AudioHudIndicator({
                       exit={{ opacity: 0, y: reduceMotion ? 0 : -3 }}
                       transition={reduceMotion ? { duration: 0.01 } : { duration: 0.14, ease: hudEase }}
                     >
-                      {livePlaceholder}
+                      {livePlaceholderText}
                     </motion.span>
                   )}
                 </AnimatePresence>

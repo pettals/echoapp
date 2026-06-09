@@ -57,6 +57,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Dictation insights must store only aggregate usage stats, not transcript text, and must remain independent of transcript history retention.
 - Notepad notes must remain local, autosave while editing, and support dictation insertion without triggering external paste automation.
 - Local mode must explain model sizes, disk use, download state, and offline behavior.
+- Local mode must avoid repeated model loads during an app session, expose a conservative CPU usage control, and show safe timing diagnostics that exclude transcripts, audio content, paths, and secrets.
 - Windows must not present macOS-only affordances as working features.
 - The desktop UI should use the custom Echo design system: clean light/dark themes, persistent sidebar navigation, quiet native surfaces, compact desktop density, and reduced-motion-aware transitions.
 

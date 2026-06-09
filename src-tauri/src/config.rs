@@ -108,6 +108,8 @@ pub struct AppConfig {
     pub model_provider: String,
     #[serde(default = "default_local_model_size")]
     pub local_model_size: String,
+    #[serde(default)]
+    pub local_transcription_threads: Option<usize>,
     #[serde(default = "default_true")]
     pub sounds_enabled: bool,
     #[serde(default = "default_indicator_sound")]
@@ -165,6 +167,7 @@ impl Default for AppConfig {
             input_device: None,
             model_provider: default_model_provider(),
             local_model_size: default_local_model_size(),
+            local_transcription_threads: None,
             sounds_enabled: default_true(),
             indicator_sound: default_indicator_sound(),
             success_sound: default_success_sound(),
@@ -425,6 +428,25 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.json");
         (dir, path)
+    }
+
+    #[test]
+    fn load_old_config_defaults_local_transcription_threads() {
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{
+                "groq_api_key": "",
+                "shortcut": "CommandOrControl+D",
+                "transcription_model": "whisper-large-v3-turbo",
+                "cleanup_model": "llama-3.1-8b-instant",
+                "cleanup_enabled": true,
+                "model_provider": "local",
+                "local_model_size": "small"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.local_transcription_threads, None);
+        assert_eq!(cfg.model_provider, "local");
     }
 
     #[test]

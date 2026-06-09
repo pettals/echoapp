@@ -42,6 +42,7 @@
 - [x] Add auth-aware route/state model so authenticated users continue into the existing setup flow, while signed-out users cannot skip required auth accidentally.
 - [ ] Add tests for auth state transitions and onboarding routing where practical.
 - [x] Add local model checksum/integrity validation and clearer disk-size messaging; partial download cleanup and retry UI are partially in place.
+- [x] Add local transcription performance hardening: cached Whisper model reuse, calmer CPU thread control, safe timing diagnostics, and recording temp-file cleanup.
 - [x] Add history clear confirmation and verify disabled-history UX.
 - [x] Add transcription cleanup behavior documentation and preview copy for local mode.
 - [x] Add local Notepad MVP with autosaved notes, markdown preview, and note-specific dictation insertion.
@@ -72,6 +73,7 @@
 - Onboarding: fresh installs, returning users with existing config, denied permissions, skip path, missing provider setup handoff, hotkey test failure, and Windows first run.
 - macOS first run: provider setup handoff, mic denied/regranted, Accessibility denied/regranted, shortcut conflict, paste fallback, hidden window, tray/menu bar, dock indicator.
 - Visual (custom Echo UI): dark-first dashboard theme, light/system theme choices, persistent desktop sidebar, Dynamic Island HUD states, insights bento dashboard, grouped history rows, local Notepad editor, compact settings controls, reduced-motion respected.
+- Local transcription performance: first local dictation after launch may load the model, second dictation should report a model-cache hit, Balanced Auto should avoid saturating all CPU cores, and temp WAV recordings should not accumulate after completion or expected errors.
 - macOS target apps: Notes, Safari, Chrome, Slack, Mail, Messages, VS Code, and browser text fields.
 - Windows first run: shortcut, recording, paste/copy fallback, history, settings, local model download/transcription, and installer launch.
 - Release checks: build production bundles on macOS and Windows and test on clean machines/accounts.

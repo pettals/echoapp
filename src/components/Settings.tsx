@@ -25,7 +25,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { AppConfig, AppearanceTheme } from "../App";
 import type { AuthUserSummary } from "../auth";
-import groqLogo from "../assets/groq-logo.svg";
+import { getSession } from "../auth";
 import {
   Alert,
   Button,
@@ -97,6 +97,7 @@ interface SettingsProps {
   config: AppConfig;
   onSave: (config: AppConfig) => Promise<void>;
   onCancel: () => void;
+  onClearInsights?: () => Promise<void>;
   onSignOut: () => Promise<void>;
   onOpenOnboarding?: () => void;
   onPreviewAppearance?: (theme: AppearanceTheme) => void;
@@ -118,11 +119,6 @@ const CLEANUP_MODELS = [
   { label: "Llama 3.3 70B (quality)", value: "llama-3.3-70b-versatile" },
 ];
 
-const LOCAL_MODEL_OPTIONS = [
-  { label: "Small (faster, less accurate)", value: "small" },
-  { label: "Medium (slower, more accurate)", value: "medium" },
-];
-
 const SOUND_OPTIONS = [
   { label: "Tink", value: "tink" },
   { label: "Pop", value: "pop" },
@@ -131,6 +127,15 @@ const SOUND_OPTIONS = [
   { label: "Purr", value: "purr" },
   { label: "Morse", value: "morse" },
   { label: "None", value: "none" },
+];
+
+const LOCAL_THREAD_OPTIONS = [
+  { label: "Balanced Auto", value: "" },
+  { label: "1 thread", value: "1" },
+  { label: "2 threads", value: "2" },
+  { label: "4 threads", value: "4" },
+  { label: "6 threads", value: "6" },
+  { label: "8 threads", value: "8" },
 ];
 
 function normalizeShortcutKey(key: string): string {
@@ -205,16 +210,16 @@ function SettingsSection({
 
 function ProviderCard({
   active,
-  brand,
   description,
   icon,
   label,
+  note,
   onClick,
 }: {
   active: boolean;
-  brand: "groq" | "local";
   description: string;
   icon: React.ReactNode;
+  note?: string;
   label: string;
   onClick: () => void;
 }) {
@@ -223,7 +228,9 @@ function ProviderCard({
   return (
     <motion.button
       type="button"
-      className={`provider-card provider-card--${brand}${active ? " provider-card--active" : ""}`}
+      className={`settings-choice settings-choice--${active ? "active" : "inactive"} provider-card provider-card--${
+        active ? "active" : "inactive"
+      }`}
       aria-pressed={active}
       onClick={onClick}
       whileHover={reduceMotion ? undefined : { y: -1 }}
@@ -234,20 +241,25 @@ function ProviderCard({
       <span className="provider-card-icon">{icon}</span>
       <div className="provider-card__title">
         <strong>{label}</strong>
-        {brand === "groq" && (
-          <img
-            className="provider-card__brandmark"
-            src={groqLogo}
-            alt="Groq"
-          />
-        )}
+        <span className={`settings-choice__chip provider-card__chip${active ? " settings-choice__chip--active provider-card__chip--active" : ""}`}>
+          {active ? "Selected" : "Not selected"}
+        </span>
       </div>
       <span>{description}</span>
+      {note && <span className="provider-card__note">{note}</span>}
     </motion.button>
   );
 }
 
-function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) {
+function ModelDownloadSection({
+  modelSize,
+  onSelect,
+  selected,
+}: {
+  modelSize: "small" | "medium";
+  onSelect: (modelSize: "small" | "medium") => void;
+  selected: boolean;
+}) {
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState("");
@@ -322,7 +334,9 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
 
     setStatus((prev) => (prev ? { ...prev, downloading: true } : prev));
     try {
-      await invoke("download_whisper_model", { modelSize });
+      const session = await getSession();
+      const accessToken = session?.access_token ?? "";
+      await invoke("download_whisper_model", { modelSize, accessToken });
       await checkStatus();
     } catch (e) {
       setError(formatErrorMessage(e));
@@ -383,21 +397,26 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
 
   const expectedSize =
     status?.expected_size_bytes || (modelSize === "small" ? 487_601_967 : 1_533_763_059);
-  const sizeHint =
+  const sizeLabel = `${formatBytes(expectedSize)} download`;
+  const modelBenefit =
     modelSize === "small"
-      ? `${formatBytes(expectedSize)} download, about 0.5 GB on disk`
-      : `${formatBytes(expectedSize)} download, about 1.6 GB on disk`;
+      ? "Fastest. Good for everyday dictation."
+      : "More accurate. Larger download.";
+  const canSelect = Boolean(status?.downloaded && !status.downloading);
+  const selectedAvailable = selected && canSelect;
   const statusTone = !status
     ? "neutral"
-    : status.downloaded
-      ? "success"
+    : selectedAvailable
+      ? "accent"
+      : status.downloaded
+      ? "neutral"
       : status.downloading
         ? "accent"
         : "neutral";
   const statusLabel = !status
     ? "Checking"
-    : status.downloaded
-      ? `${status.integrity_checked ? "Verified" : "Ready"} (${formatBytes(status.file_size_bytes)})`
+    : selectedAvailable
+      ? "Selected"
       : status.downloading
         ? "Downloading"
         : status.integrity_error
@@ -405,20 +424,50 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
           : "Not downloaded";
 
   return (
-    <Card className="model-download-card">
+    <Card
+      className={`settings-choice settings-choice--${selectedAvailable ? "active" : "inactive"}${
+        canSelect ? "" : " settings-choice--unavailable"
+      } model-download-card${selectedAvailable ? " model-download-card--selected" : ""}${
+        canSelect ? "" : " model-download-card--unavailable"
+      }${canSelect ? " model-download-card--ready" : ""}`}
+    >
       <div className="model-download-card__header">
         <div>
           <strong>Whisper {modelSize.charAt(0).toUpperCase() + modelSize.slice(1)}</strong>
-          <span>{sizeHint}</span>
+          <span>{sizeLabel}</span>
         </div>
-        <Chip tone={statusTone}>{statusLabel}</Chip>
+        <div className="model-download-card__header-actions">
+          {selectedAvailable ? (
+            <>
+              <Chip tone="accent">Selected</Chip>
+              <IconButton
+                label="Remove model"
+                tone="danger"
+                onClick={() => void handleDelete()}
+              >
+                <X size={14} />
+              </IconButton>
+              {!status?.integrity_checked && (
+                <IconButton
+                  label={verifying ? "Verifying..." : "Verify model"}
+                  onClick={() => void handleVerify()}
+                  disabled={verifying}
+                >
+                  <RefreshCw size={15} />
+                </IconButton>
+              )}
+            </>
+          ) : status?.downloaded && !status.downloading ? (
+            <Button variant="primary" onClick={() => onSelect(modelSize)} size="sm">
+              Use this model
+            </Button>
+          ) : (
+            <Chip tone={statusTone}>{statusLabel}</Chip>
+          )}
+        </div>
       </div>
 
-      <p className="settings-helper">
-        Echo checks the file size before enabling local transcription. Verify runs a full SHA-256
-        checksum when you need it.
-        {status?.integrity_error ? ` ${status.integrity_error}` : ""}
-      </p>
+      <p className="model-download-card__subtitle">{modelBenefit}</p>
 
       <AnimatePresence initial={false} mode="wait">
         {status?.downloading && (
@@ -441,7 +490,7 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
       </AnimatePresence>
 
       <AnimatePresence initial={false}>
-        {error && (
+        {(error || status?.integrity_error) && (
           <motion.div
             key="download-error"
             initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
@@ -449,40 +498,25 @@ function ModelDownloadSection({ modelSize }: { modelSize: "small" | "medium" }) 
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
             transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
           >
-            <Alert tone="error">{error}</Alert>
+            <Alert tone="error">{error || status?.integrity_error}</Alert>
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div className="settings-row">
-        {!status && (
-          <Button variant="secondary" disabled>
-            Checking...
-          </Button>
-        )}
-        {status && !status.downloaded && !status.downloading && (
-          <Button variant="primary" onClick={handleDownload}>
-            {status.integrity_error ? "Retry Download" : "Download Model"}
-          </Button>
-        )}
-        {status?.downloaded && !status.downloading && (
-          <>
-            {!status.integrity_checked && (
-              <Button
-                variant="secondary"
-                icon={<RefreshCw size={15} />}
-                onClick={() => void handleVerify()}
-                disabled={verifying}
-              >
-                {verifying ? "Verifying..." : "Verify"}
-              </Button>
-            )}
-            <Button variant="secondary" onClick={handleDelete} disabled={verifying}>
-              Remove
+      {(!status || (status && !status.downloaded && !status.downloading)) && (
+        <div className="model-download-card__actions">
+          {!status && (
+            <Button variant="secondary" disabled size="sm">
+              Checking...
             </Button>
-          </>
-        )}
-      </div>
+          )}
+          {status && !status.downloaded && !status.downloading && (
+            <Button variant="primary" onClick={handleDownload} size="sm">
+              {status.integrity_error ? "Retry Download" : "Download Model"}
+            </Button>
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -526,6 +560,7 @@ export default function Settings({
   config,
   onSave,
   onCancel,
+  onClearInsights,
   onSignOut,
   onOpenOnboarding,
   onPreviewAppearance,
@@ -550,6 +585,9 @@ export default function Settings({
   const [diagnostics, setDiagnostics] = useState<SupportDiagnostics | null>(null);
   const [diagnosticsState, setDiagnosticsState] = useState<"idle" | "loading" | "copied" | "error">("idle");
   const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
+  const [clearInsightsConfirming, setClearInsightsConfirming] = useState(false);
+  const [clearInsightsState, setClearInsightsState] = useState<"idle" | "clearing" | "success" | "error">("idle");
+  const [clearInsightsMessage, setClearInsightsMessage] = useState("");
   const reduceMotion = useReducedMotion() ?? false;
 
   useEffect(() => {
@@ -593,6 +631,10 @@ export default function Settings({
     const nextForm = {
       ...form,
       groq_api_key: form.groq_api_key.trim(),
+      local_transcription_threads:
+        form.local_transcription_threads && form.local_transcription_threads > 0
+          ? Math.round(form.local_transcription_threads)
+          : null,
     };
 
     if (nextForm.model_provider === "api") {
@@ -614,6 +656,26 @@ export default function Settings({
       setSaveError(formatErrorMessage(e));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleClearInsights = async () => {
+    setClearInsightsMessage("");
+    if (!clearInsightsConfirming) {
+      setClearInsightsConfirming(true);
+      setClearInsightsState("idle");
+      return;
+    }
+
+    setClearInsightsState("clearing");
+    try {
+      await onClearInsights?.();
+      setClearInsightsConfirming(false);
+      setClearInsightsState("success");
+      setClearInsightsMessage("Insights cleared. Your history and notes were kept.");
+    } catch (e) {
+      setClearInsightsState("error");
+      setClearInsightsMessage(formatErrorMessage(e));
     }
   };
 
@@ -877,18 +939,17 @@ export default function Settings({
         <div className="settings-grid settings-grid--two">
           <ProviderCard
             active={form.model_provider === "api"}
-            brand="groq"
             icon={<Sparkles size={18} />}
-            label="Groq API"
-            description="Online, fast"
+            label="Cloud"
+            description="Fast online transcription."
+            note="Powered by Groq."
             onClick={() => setForm({ ...form, model_provider: "api" })}
           />
           <ProviderCard
             active={form.model_provider === "local"}
-            brand="local"
             icon={<Cpu size={18} />}
             label="Local"
-            description="Offline, private"
+            description="Private on-device transcription."
             onClick={() => setForm({ ...form, model_provider: "local" })}
           />
         </div>
@@ -896,10 +957,10 @@ export default function Settings({
 
       {form.model_provider === "api" && (
         <>
-          <SettingsSection icon={<Shield size={18} />} title="Groq API">
+          <SettingsSection icon={<Shield size={18} />} title="Cloud API">
             <Field
               id="api-key"
-              label="Groq API Key"
+              label="Cloud API Key"
               type="password"
               value={form.groq_api_key}
               onChange={(e) => setForm({ ...form, groq_api_key: e.target.value })}
@@ -1003,26 +1064,40 @@ export default function Settings({
 
       {form.model_provider === "local" && (
         <SettingsSection icon={<Cpu size={18} />} title="Local Whisper Models">
-          <Alert tone="info">
-            Local mode transcribes entirely on this device and returns the raw transcript. Groq AI
-            cleanup is not run in local mode.
-          </Alert>
+          <Alert tone="info">Run transcription privately on this device.</Alert>
+          {form.local_model_size === "medium" && (
+            <Alert tone="warning">
+              Whisper Medium uses substantially more memory than Small. Echo now keeps the loaded
+              model cached while the app is open, so the first dictation after launch may be slower
+              than the next one.
+            </Alert>
+          )}
           <SelectField
-            id="local-model-size"
-            label="Model Size"
-            value={form.local_model_size}
+            id="local-transcription-threads"
+            label="Local CPU Usage"
+            value={form.local_transcription_threads ? String(form.local_transcription_threads) : ""}
             onChange={(e) =>
               setForm({
                 ...form,
-                local_model_size: e.target.value as "small" | "medium",
+                local_transcription_threads: e.target.value ? Number(e.target.value) : null,
               })
             }
-            options={LOCAL_MODEL_OPTIONS}
-            helperText="Models run entirely on your device. No internet needed after download."
+            options={LOCAL_THREAD_OPTIONS}
+            helperText="Balanced Auto caps local Whisper to a calmer CPU profile."
           />
-          <div className="settings-grid settings-grid--two">
-            <ModelDownloadSection key="small" modelSize="small" />
-            <ModelDownloadSection key="medium" modelSize="medium" />
+          <div className="local-model-list">
+            <ModelDownloadSection
+              key="small"
+              modelSize="small"
+              selected={form.local_model_size === "small"}
+              onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
+            />
+            <ModelDownloadSection
+              key="medium"
+              modelSize="medium"
+              selected={form.local_model_size === "medium"}
+              onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
+            />
           </div>
         </SettingsSection>
       )}
@@ -1159,6 +1234,36 @@ export default function Settings({
           }
           helperText="Echo keeps at most 100 local history items."
         />
+        {onClearInsights && (
+          <div className="settings-danger-row">
+            <div>
+              <strong>Dictation insights</strong>
+              <span>Total words, WPM, streaks, and milestones are stored locally.</span>
+            </div>
+            <Button
+              type="button"
+              variant={clearInsightsConfirming ? "danger" : "secondary"}
+              onClick={() => void handleClearInsights()}
+              disabled={clearInsightsState === "clearing"}
+            >
+              {clearInsightsState === "clearing"
+                ? "Clearing..."
+                : clearInsightsConfirming
+                  ? "Confirm Clear"
+                  : "Clear Insights"}
+            </Button>
+          </div>
+        )}
+        {clearInsightsConfirming && (
+          <Alert tone="warning">
+            This resets only dictation insights. Transcript history and Notepad notes stay on this device.
+          </Alert>
+        )}
+        {clearInsightsMessage && (
+          <Alert tone={clearInsightsState === "error" ? "error" : "success"}>
+            {clearInsightsMessage}
+          </Alert>
+        )}
       </SettingsSection>
 
       <SettingsSection icon={<FileText size={18} />} title="Support Diagnostics">

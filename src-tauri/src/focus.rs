@@ -170,7 +170,7 @@ pub struct FocusTargetInfo {
 mod windows {
     use std::ptr;
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct WindowTarget {
         pub hwnd: usize,
         pub process_id: u32,
@@ -249,7 +249,7 @@ mod windows {
 }
 
 /// Opaque handle representing the previously focused app/window.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FocusTarget {
     #[cfg(target_os = "macos")]
     MacApp(String),
@@ -276,10 +276,22 @@ impl FocusTarget {
         FocusTarget::None
     }
 
-    pub fn capture_with_info() -> (Self, Option<FocusTargetInfo>) {
-        let target = Self::capture();
-        let info = target.info();
-        (target, info)
+    pub fn basic_info(&self) -> Option<FocusTargetInfo> {
+        match self {
+            #[cfg(target_os = "macos")]
+            FocusTarget::MacApp(bundle_id) => Some(FocusTargetInfo {
+                bundle_id: Some(bundle_id.clone()),
+                name: None,
+                icon_data_url: None,
+            }),
+            #[cfg(target_os = "windows")]
+            FocusTarget::WinWindow(_) => Some(FocusTargetInfo {
+                bundle_id: None,
+                name: None,
+                icon_data_url: None,
+            }),
+            FocusTarget::None => None,
+        }
     }
 
     pub fn info(&self) -> Option<FocusTargetInfo> {

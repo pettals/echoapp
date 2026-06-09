@@ -98,6 +98,10 @@ pub fn view(local_date: &str) -> Result<DictationStats, String> {
     view_from_stored(&stats, local_date)
 }
 
+pub fn clear() -> Result<(), String> {
+    save(&StoredStats::default())
+}
+
 pub fn record(
     word_count: u64,
     duration_ms: u64,

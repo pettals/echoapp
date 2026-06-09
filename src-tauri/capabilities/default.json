@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for Echo desktop windows",
-  "windows": ["main", "indicator", "notepad"],
+  "windows": ["main", "indicator", "indicator-*", "notepad"],
   "permissions": [
     "core:default",
     "core:window:default",

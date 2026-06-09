@@ -64,9 +64,12 @@ fn visual_level(rms: f32, peak: f32) -> f32 {
 
 pub struct RecorderHandle {
     cmd_tx: Option<mpsc::Sender<Command>>,
-    result_rx: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    result_rx: Option<RecordingResultReceiver>,
     recording: bool,
 }
+
+pub type RecordingResult = Result<std::path::PathBuf, String>;
+pub type RecordingResultReceiver = mpsc::Receiver<RecordingResult>;
 
 impl RecorderHandle {
     pub fn new() -> Self {
@@ -89,7 +92,7 @@ impl RecorderHandle {
 
         let device_name_owned = device_name.map(|s| s.to_string());
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
-        let (result_tx, result_rx) = mpsc::channel::<Result<std::path::PathBuf, String>>();
+        let (result_tx, result_rx) = mpsc::channel::<RecordingResult>();
 
         thread::spawn(move || {
             let result = run_recording(
@@ -107,7 +110,7 @@ impl RecorderHandle {
         Ok(())
     }
 
-    pub fn stop(&mut self) -> Result<std::path::PathBuf, String> {
+    pub fn begin_stop(&mut self) -> Result<RecordingResultReceiver, String> {
         if !self.recording {
             return Err("Not recording".to_string());
         }
@@ -116,15 +119,8 @@ impl RecorderHandle {
             let _ = tx.send(Command::Stop);
         }
 
-        let result = self
-            .result_rx
-            .take()
-            .ok_or("No result channel")?
-            .recv()
-            .map_err(|e| format!("Recv error: {e}"))?;
-
         self.recording = false;
-        result
+        self.result_rx.take().ok_or("No result channel".to_string())
     }
 
     pub fn is_recording(&self) -> bool {

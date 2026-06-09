@@ -29,12 +29,14 @@ use config::{AppConfig, ConfigSaveError, ConfigSaveResult};
 use focus::{FocusTarget, FocusTargetInfo};
 use groq::{GroqApiError, GroqReadiness};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Instant;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -51,6 +53,8 @@ const INDICATOR_MAIN_THREAD_TIMEOUT_MS: u64 = 180;
 const INDICATOR_DOCK_CLEARANCE: f64 = 12.0;
 const INDICATOR_RECORDING_WIDTH: f64 = 420.0;
 const INDICATOR_RECORDING_COMPACT_HEIGHT: f64 = 52.0;
+const NOTEPAD_WINDOW_WIDTH: f64 = 720.0;
+const NOTEPAD_WINDOW_HEIGHT: f64 = 540.0;
 
 struct AppState {
     recorder: Mutex<RecorderHandle>,
@@ -61,12 +65,17 @@ struct AppState {
     recording_active: Arc<AtomicBool>,
     download_state: Arc<model_download::DownloadState>,
     quit_requested: Arc<AtomicBool>,
-    indicator_hovered: Arc<AtomicBool>,
+    indicator_hovered: Arc<Mutex<HashMap<String, bool>>>,
     indicator_hover_enabled: Arc<AtomicBool>,
     indicator_hover_generation: Arc<AtomicU64>,
     indicator_collapse_generation: Arc<AtomicU64>,
-    indicator_geometry: Mutex<Option<IndicatorGeometry>>,
+    indicator_geometry: Mutex<HashMap<String, IndicatorGeometry>>,
+    indicator_window_count: Mutex<usize>,
     app_shortcut: Mutex<Option<String>>,
+    config: Mutex<AppConfig>,
+    shortcut_recording_started_at: Mutex<Option<Instant>>,
+    shortcut_session_counter: AtomicU64,
+    active_shortcut_session_id: Mutex<Option<u64>>,
 }
 
 unsafe impl Send for AppState {}
@@ -80,42 +89,256 @@ struct LiveTranscriptionSession {
 struct IndicatorGeometry {
     width: f64,
     height: f64,
+    monitor: IndicatorMonitorGeometry,
 }
 
-fn indicator_geometry_matches(geometry: IndicatorGeometry, width: f64, height: f64) -> bool {
-    (geometry.width - width).abs() < 0.5 && (geometry.height - height).abs() < 0.5
+#[derive(Clone, Copy)]
+struct IndicatorMonitorGeometry {
+    work_x: i32,
+    work_y: i32,
+    work_width: u32,
+    work_height: u32,
+    scale_bits: u64,
 }
 
-fn remember_indicator_geometry(app: &tauri::AppHandle, width: f64, height: f64) {
+fn indicator_monitor_geometry(monitor: &tauri::Monitor) -> IndicatorMonitorGeometry {
+    let work_area = monitor.work_area();
+    IndicatorMonitorGeometry {
+        work_x: work_area.position.x,
+        work_y: work_area.position.y,
+        work_width: work_area.size.width,
+        work_height: work_area.size.height,
+        scale_bits: monitor.scale_factor().to_bits(),
+    }
+}
+
+fn indicator_geometry_matches(
+    geometry: IndicatorGeometry,
+    width: f64,
+    height: f64,
+    monitor: &tauri::Monitor,
+) -> bool {
+    let monitor_geometry = indicator_monitor_geometry(monitor);
+    (geometry.width - width).abs() < 0.5
+        && (geometry.height - height).abs() < 0.5
+        && geometry.monitor.work_x == monitor_geometry.work_x
+        && geometry.monitor.work_y == monitor_geometry.work_y
+        && geometry.monitor.work_width == monitor_geometry.work_width
+        && geometry.monitor.work_height == monitor_geometry.work_height
+        && geometry.monitor.scale_bits == monitor_geometry.scale_bits
+}
+
+fn remember_indicator_geometry(
+    app: &tauri::AppHandle,
+    label: &str,
+    width: f64,
+    height: f64,
+    monitor: &tauri::Monitor,
+) {
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut geometry) = state.indicator_geometry.lock() {
-            *geometry = Some(IndicatorGeometry { width, height });
+            geometry.insert(
+                label.to_string(),
+                IndicatorGeometry {
+                    width,
+                    height,
+                    monitor: indicator_monitor_geometry(monitor),
+                },
+            );
+        }
+    }
+}
+
+fn primary_indicator_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    app.primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.available_monitors().ok()?.into_iter().next())
+}
+
+fn indicator_monitors(app: &tauri::AppHandle) -> Vec<tauri::Monitor> {
+    primary_indicator_monitor(app)
+        .map(|monitor| vec![monitor])
+        .unwrap_or_default()
+}
+
+fn indicator_label(index: usize) -> String {
+    if index == 0 {
+        "indicator".to_string()
+    } else {
+        format!("indicator-{index}")
+    }
+}
+
+fn indicator_label_index(label: &str) -> Option<usize> {
+    if label == "indicator" {
+        Some(0)
+    } else {
+        label
+            .strip_prefix("indicator-")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+    }
+}
+
+fn ensure_indicator_window(app: &tauri::AppHandle, label: &str) -> Option<tauri::WebviewWindow> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Some(window);
+    }
+
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+        .title("")
+        .inner_size(INDICATOR_COMPACT_WIDTH, INDICATOR_COMPACT_HEIGHT)
+        .resizable(false)
+        .always_on_top(true)
+        .decorations(false)
+        .transparent(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .focused(false)
+        .shadow(false)
+        .build()
+        .ok()
+}
+
+fn apply_indicator_window_chrome(indicator: &tauri::WebviewWindow, collection_behavior: bool) {
+    indicator.set_always_on_top(true).ok();
+    indicator.set_shadow(false).ok();
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+        make_indicator_non_activating(indicator);
+        if collection_behavior {
+            apply_indicator_collection_behavior(indicator);
         }
     }
 }
 
 fn place_indicator_in_work_area(
     indicator: &tauri::WebviewWindow,
-    monitor: Option<tauri::Monitor>,
+    monitor: &tauri::Monitor,
     ind_w: f64,
     ind_h: f64,
 ) {
-    if let Some(monitor) = monitor {
-        let work_area = monitor.work_area();
-        let size = work_area.size;
-        let pos = work_area.position;
-        let scale = monitor.scale_factor();
+    let work_area = monitor.work_area();
+    let size = work_area.size;
+    let pos = work_area.position;
+    let scale = monitor.scale_factor();
 
-        let mon_x = pos.x as f64 / scale;
-        let mon_y = pos.y as f64 / scale;
-        let mon_w = size.width as f64 / scale;
-        let mon_h = size.height as f64 / scale;
-        let x = mon_x + (mon_w - ind_w) / 2.0;
-        let y = mon_y + mon_h - ind_h - INDICATOR_DOCK_CLEARANCE;
+    let mon_x = pos.x as f64 / scale;
+    let mon_y = pos.y as f64 / scale;
+    let mon_w = size.width as f64 / scale;
+    let mon_h = size.height as f64 / scale;
+    let x = mon_x + (mon_w - ind_w) / 2.0;
+    let y = mon_y + mon_h - ind_h - INDICATOR_DOCK_CLEARANCE;
 
-        let _ = indicator.set_size(tauri::LogicalSize::new(ind_w, ind_h));
-        let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
+    let _ = indicator.set_size(tauri::LogicalSize::new(ind_w, ind_h));
+    let _ = indicator.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+fn hide_stale_indicator_windows(app: &tauri::AppHandle, active_count: usize) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+
+    let previous_count = state
+        .indicator_window_count
+        .lock()
+        .map(|mut count| {
+            let previous = *count;
+            *count = active_count;
+            previous
+        })
+        .unwrap_or(active_count);
+
+    let mut stale_labels = (active_count..previous_count)
+        .map(indicator_label)
+        .collect::<Vec<_>>();
+    for label in app.webview_windows().into_keys() {
+        let is_stale_indicator = indicator_label_index(&label)
+            .map(|index| index >= active_count)
+            .unwrap_or(false);
+        if is_stale_indicator && !stale_labels.iter().any(|candidate| candidate == &label) {
+            stale_labels.push(label);
+        }
     }
+
+    for label in stale_labels {
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.hide();
+        }
+        if let Ok(mut geometry) = state.indicator_geometry.lock() {
+            geometry.remove(&label);
+        }
+        if let Ok(mut hovered) = state.indicator_hovered.lock() {
+            hovered.remove(&label);
+        }
+    }
+}
+
+fn monitor_for_indicator_label(app: &tauri::AppHandle, label: &str) -> Option<tauri::Monitor> {
+    let index = indicator_label_index(label)?;
+    if index == 0 {
+        primary_indicator_monitor(app)
+    } else {
+        None
+    }
+}
+
+fn update_indicator_label_on_main(
+    app: &tauri::AppHandle,
+    label: String,
+    width: f64,
+    height: f64,
+    emit_hover: Option<bool>,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let hover_label = label.clone();
+        let Some(indicator) = app_handle.get_webview_window(&label) else {
+            return;
+        };
+        apply_indicator_window_chrome(&indicator, false);
+        if let Some(monitor) = monitor_for_indicator_label(&app_handle, &label) {
+            place_indicator_in_work_area(&indicator, &monitor, width, height);
+            remember_indicator_geometry(&app_handle, &label, width, height, &monitor);
+        }
+        if let Some(expanded) = emit_hover {
+            let _ = indicator.emit(
+                "indicator-hover",
+                IndicatorHoverPayload {
+                    expanded,
+                    label: Some(hover_label),
+                },
+            );
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn place_primary_indicator_window(
+    app: &tauri::AppHandle,
+    ind_w: f64,
+    ind_h: f64,
+    show: bool,
+    collection_behavior: bool,
+) {
+    let Some(monitor) = primary_indicator_monitor(app) else {
+        hide_stale_indicator_windows(app, 1);
+        return;
+    };
+    let Some(indicator) = ensure_indicator_window(app, "indicator") else {
+        hide_stale_indicator_windows(app, 1);
+        return;
+    };
+
+    apply_indicator_window_chrome(&indicator, collection_behavior);
+    place_indicator_in_work_area(&indicator, &monitor, ind_w, ind_h);
+    remember_indicator_geometry(app, "indicator", ind_w, ind_h, &monitor);
+    if show {
+        indicator.show().ok();
+    }
+
+    hide_stale_indicator_windows(app, 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -130,28 +353,31 @@ fn configure_indicator_window_on_main(
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
         if let Some(indicator) = app_handle.get_webview_window("indicator") {
-            indicator.set_always_on_top(true).ok();
-            indicator.set_shadow(false).ok();
-
             if let (Some(width), Some(height)) = (width, height) {
-                let monitor = app_handle.primary_monitor().ok().flatten();
-                place_indicator_in_work_area(&indicator, monitor, width, height);
-                remember_indicator_geometry(&app_handle, width, height);
-            }
-
-            unsafe {
-                make_indicator_non_activating(&indicator);
-                if collection_behavior {
-                    apply_indicator_collection_behavior(&indicator);
+                let should_show = show || indicator.is_visible().unwrap_or(false);
+                place_primary_indicator_window(
+                    &app_handle,
+                    width,
+                    height,
+                    should_show,
+                    collection_behavior,
+                );
+            } else {
+                apply_indicator_window_chrome(&indicator, collection_behavior);
+                if show {
+                    indicator.show().ok();
                 }
+                hide_stale_indicator_windows(&app_handle, 1);
             }
 
             if let Some(expanded) = emit_hover {
-                let _ = indicator.emit("indicator-hover", IndicatorHoverPayload { expanded });
-            }
-
-            if show {
-                indicator.show().ok();
+                let _ = indicator.emit(
+                    "indicator-hover",
+                    IndicatorHoverPayload {
+                        expanded,
+                        label: None,
+                    },
+                );
             }
         }
     })
@@ -168,22 +394,31 @@ fn configure_indicator_window_on_main(
     _collection_behavior: bool,
 ) -> Result<(), String> {
     if let Some(indicator) = app.get_webview_window("indicator") {
-        indicator.set_always_on_top(true).ok();
-        indicator.set_shadow(false).ok();
+        apply_indicator_window_chrome(&indicator, _collection_behavior);
 
         if let (Some(width), Some(height)) = (width, height) {
             let monitor = app.primary_monitor().ok().flatten();
-            place_indicator_in_work_area(&indicator, monitor, width, height);
-            remember_indicator_geometry(app, width, height);
+            if let Some(monitor) = monitor {
+                place_indicator_in_work_area(&indicator, &monitor, width, height);
+                remember_indicator_geometry(app, "indicator", width, height, &monitor);
+            }
         }
 
         if let Some(expanded) = emit_hover {
-            let _ = indicator.emit("indicator-hover", IndicatorHoverPayload { expanded });
+            let _ = indicator.emit(
+                "indicator-hover",
+                IndicatorHoverPayload {
+                    expanded,
+                    label: None,
+                },
+            );
         }
 
         if show {
             indicator.show().ok();
         }
+
+        hide_stale_indicator_windows(app, 1);
     }
 
     Ok(())
@@ -195,18 +430,27 @@ fn update_indicator_window_on_main(
     height: f64,
     emit_hover: Option<bool>,
 ) -> Result<(), String> {
-    configure_indicator_window_on_main(
-        app,
-        Some(width),
-        Some(height),
-        emit_hover,
-        false,
-        false,
-    )
+    configure_indicator_window_on_main(app, Some(width), Some(height), emit_hover, false, false)
 }
 
-fn emit_indicator_hover_on_main(app: &tauri::AppHandle, expanded: bool) -> Result<(), String> {
-    configure_indicator_window_on_main(app, None, None, Some(expanded), false, false)
+fn emit_indicator_hover_label_on_main(
+    app: &tauri::AppHandle,
+    label: String,
+    expanded: bool,
+) -> Result<(), String> {
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(indicator) = app_handle.get_webview_window(&label) {
+            let _ = indicator.emit(
+                "indicator-hover",
+                IndicatorHoverPayload {
+                    expanded,
+                    label: Some(label),
+                },
+            );
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 fn is_indicator_compact_size(width: f64, height: f64) -> bool {
@@ -227,29 +471,60 @@ fn capture_focus_target(
     state: &AppState,
     external_only: bool,
 ) -> Result<(), String> {
-    let (target, info) = FocusTarget::capture_with_info();
+    let target = FocusTarget::capture();
     if external_only && target.is_self_app() {
         emit_indicator_target(app, None);
         return Ok(());
     }
 
+    let info = target.basic_info();
     *state
         .focus_target
         .lock()
-        .map_err(|e| format!("Lock error: {e}"))? = target;
+        .map_err(|e| format!("Lock error: {e}"))? = target.clone();
     *state
         .focus_target_info
         .lock()
         .map_err(|e| format!("Lock error: {e}"))? = info.clone();
     emit_indicator_target(app, info.as_ref());
+    refresh_focus_target_info(app.clone(), target);
     Ok(())
+}
+
+fn refresh_focus_target_info(app: tauri::AppHandle, target: FocusTarget) {
+    std::thread::spawn(move || {
+        let info = target.info();
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+
+        let still_current = state
+            .focus_target
+            .lock()
+            .map(|current| *current == target)
+            .unwrap_or(false);
+        if !still_current {
+            return;
+        }
+
+        if let Ok(mut target_info) = state.focus_target_info.lock() {
+            *target_info = info.clone();
+        }
+        emit_indicator_target(&app, info.as_ref());
+    });
 }
 
 fn reset_indicator_hover_transition(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
-        state.indicator_hovered.store(false, Ordering::SeqCst);
-        state.indicator_collapse_generation.store(0, Ordering::SeqCst);
-        state.indicator_hover_generation.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut hovered) = state.indicator_hovered.lock() {
+            hovered.clear();
+        }
+        state
+            .indicator_collapse_generation
+            .store(0, Ordering::SeqCst);
+        state
+            .indicator_hover_generation
+            .fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -272,9 +547,10 @@ fn show_indicator_window(
     let _ = configure_indicator_window_on_main(app, width, height, None, true, true);
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Serialize)]
 struct IndicatorHoverPayload {
     expanded: bool,
+    label: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -300,13 +576,40 @@ struct PasteTranscriptResult {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DictationPerformancePayload {
+    phase: String,
+    provider: String,
+    model: Option<String>,
+    local_model_size: Option<String>,
+    audio_duration_ms: Option<u64>,
+    audio_bytes: Option<u64>,
+    speech_check_ms: Option<u64>,
+    speech_detected: Option<bool>,
+    model_cache_hit: Option<bool>,
+    model_load_ms: Option<u64>,
+    audio_decode_ms: Option<u64>,
+    inference_ms: Option<u64>,
+    cloud_transcribe_ms: Option<u64>,
+    cleanup_ms: Option<u64>,
+    paste_ms: Option<u64>,
+    total_ms: u64,
+    thread_count: Option<i32>,
+    error_code: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AppShortcutPayload {
     shortcut: String,
     state: String,
+    session_id: Option<u64>,
+    audio_path: Option<String>,
+    duration_ms: Option<u64>,
+    error: Option<AppError>,
 }
 
-fn set_indicator_hover_state(app: &tauri::AppHandle, expanded: bool) {
-    if app.get_webview_window("indicator").is_some() {
+fn set_indicator_hover_state(app: &tauri::AppHandle, label: String, expanded: bool) {
+    if app.get_webview_window(&label).is_some() {
         if let Some(state) = app.try_state::<AppState>() {
             let generation = state
                 .indicator_hover_generation
@@ -317,8 +620,9 @@ fn set_indicator_hover_state(app: &tauri::AppHandle, expanded: bool) {
                 state
                     .indicator_collapse_generation
                     .store(0, Ordering::SeqCst);
-                let _ = update_indicator_window_on_main(
+                let _ = update_indicator_label_on_main(
                     app,
+                    label,
                     INDICATOR_HOVER_WIDTH,
                     INDICATOR_HOVER_HEIGHT,
                     Some(expanded),
@@ -329,7 +633,7 @@ fn set_indicator_hover_state(app: &tauri::AppHandle, expanded: bool) {
             state
                 .indicator_collapse_generation
                 .store(generation, Ordering::SeqCst);
-            let _ = emit_indicator_hover_on_main(app, expanded);
+            let _ = emit_indicator_hover_label_on_main(app, label.clone(), expanded);
             let app_handle = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(
@@ -341,13 +645,19 @@ fn set_indicator_hover_state(app: &tauri::AppHandle, expanded: bool) {
                 };
                 if state.indicator_hover_generation.load(Ordering::SeqCst) != generation
                     || state.indicator_collapse_generation.load(Ordering::SeqCst) != generation
-                    || state.indicator_hovered.load(Ordering::SeqCst)
+                    || state
+                        .indicator_hovered
+                        .lock()
+                        .ok()
+                        .and_then(|hovered| hovered.get(&label).copied())
+                        .unwrap_or(false)
                 {
                     return;
                 }
 
-                let _ = update_indicator_window_on_main(
+                let _ = update_indicator_label_on_main(
                     &app_handle,
+                    label,
                     INDICATOR_COMPACT_WIDTH,
                     INDICATOR_COMPACT_HEIGHT,
                     None,
@@ -374,7 +684,10 @@ fn ensure_indicator_visible(app: &tauri::AppHandle) {
     show_indicator_window(
         app,
         true,
-        Some((INDICATOR_RECORDING_WIDTH, INDICATOR_RECORDING_COMPACT_HEIGHT)),
+        Some((
+            INDICATOR_RECORDING_WIDTH,
+            INDICATOR_RECORDING_COMPACT_HEIGHT,
+        )),
     );
 }
 
@@ -612,7 +925,26 @@ fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppErr
         return Ok(());
     }
 
-    let cfg = AppConfig::load();
+    let cfg = state
+        .config
+        .lock()
+        .map_err(|e| {
+            AppError::new(
+                "config_lock_failed",
+                format!("Settings lock error: {e}"),
+                true,
+                None,
+            )
+        })?
+        .clone();
+    if cfg.model_provider == "api" && cfg.groq_api_key.trim().is_empty() {
+        return Err(AppError::new(
+            "missing_api_key",
+            "Enter a Groq API key or switch to a downloaded local Whisper model.",
+            false,
+            Some("Open Settings"),
+        ));
+    }
     let live_chunk_sender = start_live_transcription_session(app.clone(), state, &cfg);
     let mut recorder = state
         .recorder
@@ -649,10 +981,22 @@ fn set_indicator_hover_tracking_enabled(
         .indicator_hover_enabled
         .store(enabled, Ordering::SeqCst);
 
-    if !enabled && state.indicator_hovered.swap(false, Ordering::SeqCst) {
-        set_indicator_hover_state(&app, false);
-    }
     if !enabled {
+        let labels = state
+            .indicator_hovered
+            .lock()
+            .map(|mut hovered| {
+                let labels = hovered
+                    .iter()
+                    .filter_map(|(label, expanded)| expanded.then(|| label.clone()))
+                    .collect::<Vec<_>>();
+                hovered.clear();
+                labels
+            })
+            .unwrap_or_default();
+        for label in labels {
+            set_indicator_hover_state(&app, label, false);
+        }
         state
             .indicator_collapse_generation
             .store(0, Ordering::SeqCst);
@@ -667,16 +1011,22 @@ fn reposition_indicator(
     force: Option<bool>,
 ) -> Result<(), String> {
     let force = force.unwrap_or(false);
+    let monitor = primary_indicator_monitor(&app).ok_or("No primary monitor")?;
 
     if !force {
         if let Some(state) = app.try_state::<AppState>() {
-            if state
+            let unchanged = state
                 .indicator_geometry
                 .lock()
                 .ok()
-                .and_then(|geometry| *geometry)
-                .is_some_and(|geometry| indicator_geometry_matches(geometry, width, height))
-            {
+                .is_some_and(|geometry| {
+                    geometry.len() == 1
+                        && geometry.get("indicator").is_some_and(|stored| {
+                            indicator_geometry_matches(*stored, width, height, &monitor)
+                        })
+                });
+            if unchanged {
+                hide_stale_indicator_windows(&app, 1);
                 return Ok(());
             }
         }
@@ -760,13 +1110,29 @@ fn indicator_contains_mouse(indicator: &tauri::WebviewWindow, expanded: bool) ->
 }
 
 #[cfg(target_os = "macos")]
-fn indicator_contains_mouse_on_main(app: &tauri::AppHandle, expanded: bool) -> Option<bool> {
+fn indicator_hover_snapshot_on_main(
+    app: &tauri::AppHandle,
+    expanded_by_label: HashMap<String, bool>,
+    collapse_active: bool,
+) -> Option<Vec<(String, bool)>> {
     let (tx, rx) = mpsc::channel();
     let app_handle = app.clone();
     app.run_on_main_thread(move || {
-        let result = app_handle
-            .get_webview_window("indicator")
-            .and_then(|indicator| indicator_contains_mouse(&indicator, expanded));
+        let monitors = indicator_monitors(&app_handle);
+        let mut result = Vec::with_capacity(monitors.len());
+
+        for index in 0..monitors.len() {
+            let label = indicator_label(index);
+            let Some(indicator) = app_handle.get_webview_window(&label) else {
+                continue;
+            };
+            let expanded =
+                expanded_by_label.get(&label).copied().unwrap_or(false) || collapse_active;
+            if let Some(hovered) = indicator_contains_mouse(&indicator, expanded) {
+                result.push((label, hovered));
+            }
+        }
+
         let _ = tx.send(result);
     })
     .ok()?;
@@ -775,7 +1141,6 @@ fn indicator_contains_mouse_on_main(app: &tauri::AppHandle, expanded: bool) -> O
         INDICATOR_MAIN_THREAD_TIMEOUT_MS,
     ))
     .ok()
-    .flatten()
 }
 
 #[cfg(target_os = "macos")]
@@ -793,19 +1158,46 @@ fn start_indicator_hover_tracker(app: tauri::AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(45));
 
         if !hover_enabled.load(Ordering::SeqCst) || recording_active.load(Ordering::SeqCst) {
-            if hover_state.swap(false, Ordering::SeqCst) {
-                set_indicator_hover_state(&app, false);
+            let labels = hover_state
+                .lock()
+                .map(|mut hovered| {
+                    let labels = hovered
+                        .iter()
+                        .filter_map(|(label, expanded)| expanded.then(|| label.clone()))
+                        .collect::<Vec<_>>();
+                    hovered.clear();
+                    labels
+                })
+                .unwrap_or_default();
+            for label in labels {
+                set_indicator_hover_state(&app, label, false);
             }
             continue;
         }
 
-        let currently_expanded =
-            hover_state.load(Ordering::SeqCst) || collapse_generation.load(Ordering::SeqCst) != 0;
-        let hovered = indicator_contains_mouse_on_main(&app, currently_expanded).unwrap_or(false);
+        let expanded_by_label = hover_state
+            .lock()
+            .map(|hovered| hovered.clone())
+            .unwrap_or_default();
+        let collapse_active = collapse_generation.load(Ordering::SeqCst) != 0;
+        let Some(snapshot) =
+            indicator_hover_snapshot_on_main(&app, expanded_by_label, collapse_active)
+        else {
+            continue;
+        };
 
-        let previous = hover_state.swap(hovered, Ordering::SeqCst);
-        if hovered != previous {
-            set_indicator_hover_state(&app, hovered);
+        let mut changes = Vec::new();
+        if let Ok(mut hover_state) = hover_state.lock() {
+            for (label, hovered) in snapshot {
+                let previous = hover_state.insert(label.clone(), hovered).unwrap_or(false);
+                if hovered != previous {
+                    changes.push((label, hovered));
+                }
+            }
+        }
+
+        for (label, hovered) in changes {
+            set_indicator_hover_state(&app, label, hovered);
         }
     });
 }
@@ -912,8 +1304,7 @@ unsafe fn apply_indicator_collection_behavior(window: &tauri::WebviewWindow) {
 
     // Keep the HUD visible across Spaces, including fullscreen Spaces,
     // without pulling the user back to the app window's Space.
-    let _: () =
-        objc::msg_send![ns_win, setCollectionBehavior: 1u64 << 0 | 1u64 << 4 | 1u64 << 8];
+    let _: () = objc::msg_send![ns_win, setCollectionBehavior: 1u64 << 0 | 1u64 << 4 | 1u64 << 8];
 }
 
 #[derive(Serialize)]
@@ -923,13 +1314,24 @@ struct ScreenSize {
 }
 
 #[tauri::command]
-fn get_config() -> Result<AppConfig, String> {
-    AppConfig::try_load()
+fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, String> {
+    let config = AppConfig::try_load()?;
+    if let Ok(mut cached_config) = state.config.lock() {
+        *cached_config = config.clone();
+    }
+    Ok(config)
 }
 
 #[tauri::command]
-fn save_config(config: AppConfig) -> Result<ConfigSaveResult, ConfigSaveError> {
-    config.save_with_status()
+fn save_config(
+    state: tauri::State<'_, AppState>,
+    config: AppConfig,
+) -> Result<ConfigSaveResult, ConfigSaveError> {
+    let save_result = config.save_with_status()?;
+    if let Ok(mut cached_config) = state.config.lock() {
+        *cached_config = save_result.config.clone();
+    }
+    Ok(save_result)
 }
 
 #[tauri::command]
@@ -993,6 +1395,256 @@ fn validate_shortcut(shortcut: String) -> setup::ShortcutValidation {
     setup::validate_shortcut(&shortcut)
 }
 
+fn emit_app_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: String,
+    state: &str,
+    session_id: Option<u64>,
+    audio_path: Option<String>,
+    duration_ms: Option<u64>,
+    error: Option<AppError>,
+) {
+    let _ = app.emit_to(
+        "main",
+        "app-shortcut",
+        AppShortcutPayload {
+            shortcut,
+            state: state.to_string(),
+            session_id,
+            audio_path,
+            duration_ms,
+            error,
+        },
+    );
+}
+
+fn emit_main_event(app: &tauri::AppHandle, event: &str) {
+    let _ = app.emit_to("main", event, ());
+}
+
+fn begin_stop_recorder(state: &AppState) -> Result<audio::RecordingResultReceiver, AppError> {
+    let mut recorder = state
+        .recorder
+        .lock()
+        .map_err(|e| AppError::mic_unavailable(format!("Recorder lock error: {e}")))?;
+    if !recorder.is_recording() {
+        state.recording_active.store(false, Ordering::SeqCst);
+        cancel_live_transcription(state);
+        return Err(AppError::not_recording());
+    }
+
+    state.recording_active.store(false, Ordering::SeqCst);
+    cancel_live_transcription(state);
+    recorder.begin_stop().map_err(|e| {
+        if e == "Not recording" {
+            AppError::not_recording()
+        } else {
+            AppError::mic_unavailable(e)
+        }
+    })
+}
+
+fn wav_duration_ms(audio_path: &std::path::Path) -> Option<u64> {
+    let reader = hound::WavReader::open(audio_path).ok()?;
+    let spec = reader.spec();
+    if spec.sample_rate == 0 || spec.channels == 0 {
+        return None;
+    }
+    let frames = u64::from(reader.duration()) / u64::from(spec.channels.max(1));
+    Some(frames.saturating_mul(1_000) / u64::from(spec.sample_rate))
+}
+
+fn audio_bytes(audio_path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(audio_path)
+        .ok()
+        .map(|metadata| metadata.len())
+}
+
+fn cleanup_recording_file(audio_path: &std::path::Path) {
+    if let Err(e) = std::fs::remove_file(audio_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("Recording temp cleanup failed: {e}");
+        }
+    }
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn cleanup_recording_file_removes_existing_file_and_allows_missing_file() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
+        drop(file);
+
+        cleanup_recording_file(&path);
+        assert!(!path.exists());
+
+        cleanup_recording_file(&path);
+    }
+}
+
+fn handle_native_shortcut_pressed(app: tauri::AppHandle, shortcut: String) {
+    let Some(state) = app.try_state::<AppState>() else {
+        emit_app_shortcut(
+            &app,
+            shortcut,
+            "StartFailed",
+            None,
+            None,
+            None,
+            Some(AppError::new(
+                "state_unavailable",
+                "Echo is still starting up. Try the shortcut again.",
+                true,
+                None,
+            )),
+        );
+        return;
+    };
+
+    if state.recording_active.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let started_at = Instant::now();
+    match start_recorder(&state, &app) {
+        Ok(()) => {
+            let session_id = state
+                .shortcut_session_counter
+                .fetch_add(1, Ordering::SeqCst)
+                + 1;
+            if let Ok(mut active_session_id) = state.active_shortcut_session_id.lock() {
+                *active_session_id = Some(session_id);
+            }
+            if let Ok(mut recorded_at) = state.shortcut_recording_started_at.lock() {
+                *recorded_at = Some(started_at);
+            }
+            emit_app_shortcut(
+                &app,
+                shortcut,
+                "Started",
+                Some(session_id),
+                None,
+                None,
+                None,
+            );
+            let _ = app.emit("indicator-mode", "recording");
+
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                let _ = media::pause_media();
+                reset_indicator_hover_transition(&app_handle);
+                show_indicator_window(
+                    &app_handle,
+                    false,
+                    Some((
+                        INDICATOR_RECORDING_WIDTH,
+                        INDICATOR_RECORDING_COMPACT_HEIGHT,
+                    )),
+                );
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    let _ = capture_focus_target(&app_handle, &state, true);
+                }
+            });
+        }
+        Err(error) => {
+            emit_app_shortcut(&app, shortcut, "StartFailed", None, None, None, Some(error));
+        }
+    }
+}
+
+fn handle_native_shortcut_released(app: tauri::AppHandle, shortcut: String) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+
+    if !state.recording_active.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let duration_ms = state
+        .shortcut_recording_started_at
+        .lock()
+        .ok()
+        .and_then(|mut recorded_at| recorded_at.take())
+        .map(|started_at| started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+    let session_id = state
+        .active_shortcut_session_id
+        .lock()
+        .ok()
+        .and_then(|active_session_id| *active_session_id);
+
+    match begin_stop_recorder(&state) {
+        Ok(result_rx) => {
+            emit_app_shortcut(
+                &app,
+                shortcut.clone(),
+                "Stopping",
+                session_id,
+                None,
+                duration_ms,
+                None,
+            );
+            let _ = app.emit("indicator-mode", "transcribing");
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                let _ = media::resume_media();
+                match result_rx.recv().map_err(|e| format!("Recv error: {e}")) {
+                    Ok(Ok(path)) => emit_app_shortcut(
+                        &app_handle,
+                        shortcut,
+                        "Stopped",
+                        session_id,
+                        Some(path.to_string_lossy().to_string()),
+                        duration_ms,
+                        None,
+                    ),
+                    Ok(Err(e)) | Err(e) => emit_app_shortcut(
+                        &app_handle,
+                        shortcut,
+                        "StopFailed",
+                        session_id,
+                        None,
+                        duration_ms,
+                        Some(AppError::mic_unavailable(e)),
+                    ),
+                }
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Ok(mut active_session_id) = state.active_shortcut_session_id.lock() {
+                        if *active_session_id == session_id {
+                            *active_session_id = None;
+                        }
+                    }
+                }
+            });
+        }
+        Err(error) => {
+            if let Ok(mut active_session_id) = state.active_shortcut_session_id.lock() {
+                *active_session_id = None;
+            }
+            std::thread::spawn(|| {
+                let _ = media::resume_media();
+            });
+            emit_app_shortcut(
+                &app,
+                shortcut,
+                "StopFailed",
+                session_id,
+                None,
+                duration_ms,
+                Some(error),
+            );
+        }
+    }
+}
+
 #[tauri::command]
 fn register_app_shortcut(
     app: tauri::AppHandle,
@@ -1014,17 +1666,12 @@ fn register_app_shortcut(
     let shortcut_for_event = shortcut.clone();
     app.global_shortcut()
         .on_shortcut(shortcut.as_str(), move |app, _shortcut, event| {
-            let event_state = match event.state {
-                ShortcutState::Pressed => "Pressed",
-                ShortcutState::Released => "Released",
-            };
-            let _ = app.emit(
-                "app-shortcut",
-                AppShortcutPayload {
-                    shortcut: shortcut_for_event.clone(),
-                    state: event_state.to_string(),
-                },
-            );
+            let app = app.clone();
+            let shortcut = shortcut_for_event.clone();
+            match event.state {
+                ShortcutState::Pressed => handle_native_shortcut_pressed(app, shortcut),
+                ShortcutState::Released => handle_native_shortcut_released(app, shortcut),
+            }
         })
         .map_err(|e| e.to_string())?;
 
@@ -1107,7 +1754,10 @@ fn start_recording_from_indicator(
     show_indicator_window(
         &app,
         false,
-        Some((INDICATOR_RECORDING_WIDTH, INDICATOR_RECORDING_COMPACT_HEIGHT)),
+        Some((
+            INDICATOR_RECORDING_WIDTH,
+            INDICATOR_RECORDING_COMPACT_HEIGHT,
+        )),
     );
     let _ = app.emit("indicator-mode", "recording");
     Ok(())
@@ -1115,25 +1765,11 @@ fn start_recording_from_indicator(
 
 #[tauri::command]
 fn stop_recording(state: tauri::State<'_, AppState>) -> Result<String, AppError> {
-    let mut recorder = state
-        .recorder
-        .lock()
-        .map_err(|e| AppError::mic_unavailable(format!("Recorder lock error: {e}")))?;
-    if !recorder.is_recording() {
-        state.recording_active.store(false, Ordering::SeqCst);
-        cancel_live_transcription(&state);
-        return Err(AppError::not_recording());
-    }
-
-    state.recording_active.store(false, Ordering::SeqCst);
-    cancel_live_transcription(&state);
-    let path = recorder.stop().map_err(|e| {
-        if e == "Not recording" {
-            AppError::not_recording()
-        } else {
-            AppError::mic_unavailable(e)
-        }
-    })?;
+    let result_rx = begin_stop_recorder(&state)?;
+    let path = result_rx
+        .recv()
+        .map_err(|e| AppError::mic_unavailable(format!("Recv error: {e}")))?
+        .map_err(AppError::mic_unavailable)?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -1155,7 +1791,8 @@ fn get_recording_level(state: tauri::State<'_, AppState>) -> f32 {
 }
 
 #[tauri::command]
-async fn transcribe_audio(audio_path: String) -> Result<String, AppError> {
+async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<String, AppError> {
+    let total_start = Instant::now();
     let cfg = AppConfig::try_load().map_err(|e| {
         AppError::new(
             "config_load_failed",
@@ -1165,8 +1802,11 @@ async fn transcribe_audio(audio_path: String) -> Result<String, AppError> {
         )
     })?;
     let path = std::path::PathBuf::from(&audio_path);
+    let audio_duration_ms = wav_duration_ms(&path);
+    let audio_bytes = audio_bytes(&path);
 
     let speech_path = path.clone();
+    let speech_start = Instant::now();
     let has_speech = tokio::task::spawn_blocking(move || audio::has_speech(&speech_path))
         .await
         .map_err(|e| {
@@ -1185,43 +1825,133 @@ async fn transcribe_audio(audio_path: String) -> Result<String, AppError> {
                 None,
             )
         })?;
+    let speech_check_ms = elapsed_ms(speech_start);
 
-    if !has_speech {
-        return Err(AppError::empty_speech());
-    }
-
-    match cfg.model_provider.as_str() {
+    let result = match cfg.model_provider.as_str() {
         "local" => {
             let model_size = cfg.local_model_size.clone();
-            tokio::task::spawn_blocking(move || whisper::transcribe_local(&path, &model_size))
-                .await
-                .map_err(|e| {
-                    AppError::new(
-                        "local_transcription_failed",
-                        format!("Task error: {e}"),
-                        true,
-                        None,
-                    )
-                })?
+            let requested_threads = cfg.local_transcription_threads;
+            let local_path = path.clone();
+            let local_result = tokio::task::spawn_blocking(move || {
+                whisper::transcribe_local_with_metrics(&local_path, &model_size, requested_threads)
+            })
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    "local_transcription_failed",
+                    format!("Task error: {e}"),
+                    true,
+                    None,
+                )
+            })?;
+
+            match local_result {
+                Ok(local) => {
+                    let _ = app.emit(
+                        "dictation-performance",
+                        DictationPerformancePayload {
+                            phase: "transcribe".to_string(),
+                            provider: "local".to_string(),
+                            model: None,
+                            local_model_size: Some(local.metrics.model_size.clone()),
+                            audio_duration_ms,
+                            audio_bytes,
+                            speech_check_ms: Some(speech_check_ms),
+                            speech_detected: Some(has_speech),
+                            model_cache_hit: Some(local.metrics.model_cache_hit),
+                            model_load_ms: Some(local.metrics.model_load_ms),
+                            audio_decode_ms: Some(local.metrics.audio_decode_ms),
+                            inference_ms: Some(local.metrics.inference_ms),
+                            cloud_transcribe_ms: None,
+                            cleanup_ms: None,
+                            paste_ms: None,
+                            total_ms: elapsed_ms(total_start),
+                            thread_count: Some(local.metrics.thread_count),
+                            error_code: None,
+                        },
+                    );
+                    Ok(local.text)
+                }
+                Err(error) => {
+                    let _ = app.emit(
+                        "dictation-performance",
+                        DictationPerformancePayload {
+                            phase: "transcribe".to_string(),
+                            provider: "local".to_string(),
+                            model: None,
+                            local_model_size: Some(cfg.local_model_size.clone()),
+                            audio_duration_ms,
+                            audio_bytes,
+                            speech_check_ms: Some(speech_check_ms),
+                            speech_detected: Some(has_speech),
+                            model_cache_hit: None,
+                            model_load_ms: None,
+                            audio_decode_ms: None,
+                            inference_ms: None,
+                            cloud_transcribe_ms: None,
+                            cleanup_ms: None,
+                            paste_ms: None,
+                            total_ms: elapsed_ms(total_start),
+                            thread_count: Some(whisper::local_thread_count(
+                                cfg.local_transcription_threads,
+                            )),
+                            error_code: Some(error.code.clone()),
+                        },
+                    );
+                    Err(error)
+                }
+            }
         }
         _ => {
             if cfg.groq_api_key.is_empty() {
-                return Err(AppError::new(
+                Err(AppError::new(
                     "missing_api_key",
                     "Enter a Groq API key or switch to a downloaded local Whisper model.",
                     false,
                     Some("Open Settings"),
-                ));
+                ))
+            } else {
+                let cloud_start = Instant::now();
+                let cloud_result =
+                    transcribe_cloud_chunked(&cfg.groq_api_key, &path, &cfg.transcription_model)
+                        .await
+                        .map_err(|e| AppError::new(e.code, e.message, e.retryable, None));
+                let cloud_transcribe_ms = elapsed_ms(cloud_start);
+                let _ = app.emit(
+                    "dictation-performance",
+                    DictationPerformancePayload {
+                        phase: "transcribe".to_string(),
+                        provider: "api".to_string(),
+                        model: Some(cfg.transcription_model.clone()),
+                        local_model_size: None,
+                        audio_duration_ms,
+                        audio_bytes,
+                        speech_check_ms: Some(speech_check_ms),
+                        speech_detected: Some(has_speech),
+                        model_cache_hit: None,
+                        model_load_ms: None,
+                        audio_decode_ms: None,
+                        inference_ms: None,
+                        cloud_transcribe_ms: Some(cloud_transcribe_ms),
+                        cleanup_ms: None,
+                        paste_ms: None,
+                        total_ms: elapsed_ms(total_start),
+                        thread_count: None,
+                        error_code: cloud_result.as_ref().err().map(|error| error.code.clone()),
+                    },
+                );
+                cloud_result
             }
-            transcribe_cloud_chunked(&cfg.groq_api_key, &path, &cfg.transcription_model)
-                .await
-                .map_err(|e| AppError::new(e.code, e.message, e.retryable, None))
         }
-    }
+    };
+
+    cleanup_recording_file(&path);
+    result
 }
 
 #[tauri::command]
-async fn cleanup_text(text: String) -> Result<String, String> {
+async fn cleanup_text(app: tauri::AppHandle, text: String) -> Result<String, String> {
+    let start = Instant::now();
     let cfg = AppConfig::try_load()?;
     if cfg.groq_api_key.is_empty() {
         return Err("Groq API key not configured".to_string());
@@ -1229,23 +1959,75 @@ async fn cleanup_text(text: String) -> Result<String, String> {
     if !cfg.cleanup_enabled {
         return Ok(text);
     }
-    groq::cleanup(&cfg.groq_api_key, &text, &cfg.cleanup_model)
+    let result = groq::cleanup(&cfg.groq_api_key, &text, &cfg.cleanup_model)
         .await
-        .map_err(|e| e.message)
+        .map_err(|e| e.message);
+    let _ = app.emit(
+        "dictation-performance",
+        DictationPerformancePayload {
+            phase: "cleanup".to_string(),
+            provider: cfg.model_provider.clone(),
+            model: Some(cfg.cleanup_model.clone()),
+            local_model_size: (cfg.model_provider == "local").then(|| cfg.local_model_size),
+            audio_duration_ms: None,
+            audio_bytes: None,
+            speech_check_ms: None,
+            speech_detected: None,
+            model_cache_hit: None,
+            model_load_ms: None,
+            audio_decode_ms: None,
+            inference_ms: None,
+            cloud_transcribe_ms: None,
+            cleanup_ms: Some(elapsed_ms(start)),
+            paste_ms: None,
+            total_ms: elapsed_ms(start),
+            thread_count: None,
+            error_code: result.as_ref().err().map(|_| "cleanup_failed".to_string()),
+        },
+    );
+    result
 }
 
 #[tauri::command]
 fn paste_transcript(
     text: String,
     state: tauri::State<'_, AppState>,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<PasteTranscriptResult, AppError> {
+    let start = Instant::now();
     input::write_clipboard(&text)
         .map_err(|e| AppError::paste_denied(format!("Clipboard write failed: {e}")))?;
 
+    let finish = |result: PasteTranscriptResult| {
+        let _ = app.emit(
+            "dictation-performance",
+            DictationPerformancePayload {
+                phase: "paste".to_string(),
+                provider: "paste".to_string(),
+                model: None,
+                local_model_size: None,
+                audio_duration_ms: None,
+                audio_bytes: None,
+                speech_check_ms: None,
+                speech_detected: None,
+                model_cache_hit: None,
+                model_load_ms: None,
+                audio_decode_ms: None,
+                inference_ms: None,
+                cloud_transcribe_ms: None,
+                cleanup_ms: None,
+                paste_ms: Some(elapsed_ms(start)),
+                total_ms: elapsed_ms(start),
+                thread_count: None,
+                error_code: result.warning.as_ref().map(|warning| warning.code.clone()),
+            },
+        );
+        Ok(result)
+    };
+
     if !setup::is_accessibility_trusted() {
         eprintln!("Paste simulation skipped: Echo is not trusted for Accessibility.");
-        return Ok(PasteTranscriptResult {
+        return finish(PasteTranscriptResult {
             status: "copied_accessibility".to_string(),
             warning: Some(AppError::paste_denied(
                 "Enable Echo in Accessibility for automatic paste.",
@@ -1260,7 +2042,7 @@ fn paste_transcript(
         .clone();
 
     if target.is_self_app() || !target.has_target() {
-        return Ok(PasteTranscriptResult {
+        return finish(PasteTranscriptResult {
             status: "copied_no_target".to_string(),
             warning: None,
         });
@@ -1268,7 +2050,7 @@ fn paste_transcript(
 
     if let Err(e) = target.restore() {
         eprintln!("Focus restore failed, falling back to clipboard: {e}");
-        return Ok(PasteTranscriptResult {
+        return finish(PasteTranscriptResult {
             status: "copied".to_string(),
             warning: Some(AppError::paste_denied(format!(
                 "Could not restore the target app: {e}"
@@ -1279,13 +2061,13 @@ fn paste_transcript(
     std::thread::sleep(std::time::Duration::from_millis(250));
 
     match input::simulate_paste() {
-        Ok(()) => Ok(PasteTranscriptResult {
+        Ok(()) => finish(PasteTranscriptResult {
             status: "pasted".to_string(),
             warning: None,
         }),
         Err(e) => {
             eprintln!("Paste simulation failed, text is on clipboard: {e}");
-            Ok(PasteTranscriptResult {
+            finish(PasteTranscriptResult {
                 status: "copied_accessibility".to_string(),
                 warning: Some(AppError::paste_denied(format!(
                     "Paste simulation failed: {e}"
@@ -1406,10 +2188,11 @@ fn verify_model_status(
 #[tauri::command]
 async fn download_whisper_model(
     model_size: String,
+    access_token: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
     let dl_state = Arc::clone(&state.download_state);
-    model_download::download_model(&model_size, dl_state).await
+    model_download::download_model(&model_size, &access_token, dl_state).await
 }
 
 #[tauri::command]
@@ -1472,6 +2255,11 @@ fn get_dictation_stats(local_date: String) -> Result<stats::DictationStats, Stri
 }
 
 #[tauri::command]
+fn clear_dictation_stats() -> Result<(), String> {
+    stats::clear()
+}
+
+#[tauri::command]
 fn get_support_diagnostics(state: tauri::State<'_, AppState>) -> diagnostics::SupportDiagnostics {
     diagnostics::current_support_diagnostics(&state.download_state)
 }
@@ -1517,15 +2305,35 @@ fn show_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn show_notepad_window(app: tauri::AppHandle) {
+fn show_notepad_window(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|e| format!("Could not activate app for Notepad: {e}"))?;
 
-    if let Some(window) = app.get_webview_window("notepad") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    let window = app
+        .get_webview_window("notepad")
+        .ok_or_else(|| "Notepad window is not available".to_string())?;
+
+    window
+        .unminimize()
+        .map_err(|e| format!("Could not unminimize Notepad window: {e}"))?;
+    window
+        .show()
+        .map_err(|e| format!("Could not show Notepad window: {e}"))?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            NOTEPAD_WINDOW_WIDTH,
+            NOTEPAD_WINDOW_HEIGHT,
+        ))
+        .map_err(|e| format!("Could not resize Notepad window: {e}"))?;
+    window
+        .center()
+        .map_err(|e| format!("Could not center Notepad window: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("Could not focus Notepad window: {e}"))?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1589,12 +2397,17 @@ pub fn run() {
             recording_active: Arc::new(AtomicBool::new(false)),
             download_state: Arc::new(model_download::DownloadState::new()),
             quit_requested: Arc::new(AtomicBool::new(false)),
-            indicator_hovered: Arc::new(AtomicBool::new(false)),
+            indicator_hovered: Arc::new(Mutex::new(HashMap::new())),
             indicator_hover_enabled: Arc::new(AtomicBool::new(false)),
             indicator_hover_generation: Arc::new(AtomicU64::new(0)),
             indicator_collapse_generation: Arc::new(AtomicU64::new(0)),
-            indicator_geometry: Mutex::new(None),
+            indicator_geometry: Mutex::new(HashMap::new()),
+            indicator_window_count: Mutex::new(1),
             app_shortcut: Mutex::new(None),
+            config: Mutex::new(AppConfig::load()),
+            shortcut_recording_started_at: Mutex::new(None),
+            shortcut_session_counter: AtomicU64::new(0),
+            active_shortcut_session_id: Mutex::new(None),
         })
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
@@ -1679,13 +2492,8 @@ pub fn run() {
                 None::<&str>,
             )?;
 
-            let view_dictate_i = MenuItem::with_id(
-                app,
-                "menu_open_dictate",
-                "Home",
-                true,
-                Some("CmdOrCtrl+1"),
-            )?;
+            let view_dictate_i =
+                MenuItem::with_id(app, "menu_open_dictate", "Home", true, Some("CmdOrCtrl+1"))?;
             let view_history_i = MenuItem::with_id(
                 app,
                 "menu_open_history",
@@ -1738,10 +2546,10 @@ pub fn run() {
                     app.exit(0);
                 }
                 "menu_start_recording" => {
-                    let _ = app.emit("tray-start-recording", ());
+                    emit_main_event(app, "tray-start-recording");
                 }
                 "menu_stop_recording" => {
-                    let _ = app.emit("tray-stop-recording", ());
+                    emit_main_event(app, "tray-stop-recording");
                 }
                 "menu_open_dictate" => {
                     show_main_window_internal(app);
@@ -1801,10 +2609,10 @@ pub fn run() {
                         show_main_window_internal(app);
                     }
                     "start_recording" => {
-                        let _ = app.emit("tray-start-recording", ());
+                        emit_main_event(app, "tray-start-recording");
                     }
                     "stop_recording" => {
-                        let _ = app.emit("tray-stop-recording", ());
+                        emit_main_event(app, "tray-stop-recording");
                     }
                     "view_history" => {
                         show_main_window_internal(app);
@@ -1877,6 +2685,7 @@ pub fn run() {
             delete_transcript_history,
             clear_transcript_history,
             get_dictation_stats,
+            clear_dictation_stats,
             get_support_diagnostics,
             get_support_diagnostics_json,
             record_dictation_stats,

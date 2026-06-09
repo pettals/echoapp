@@ -31,10 +31,10 @@
       {
         "label": "notepad",
         "title": "Notepad",
-        "width": 980,
-        "height": 1040,
+        "width": 720,
+        "height": 540,
         "minWidth": 520,
-        "minHeight": 640,
+        "minHeight": 420,
         "resizable": true,
         "alwaysOnTop": false,
         "decorations": true,

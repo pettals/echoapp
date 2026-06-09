@@ -1,16 +1,30 @@
 use crate::{app_error::AppError, whisper};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+const SIGNED_MODEL_URL_ENDPOINT: &str =
+    "https://glkriavrwsissibmwxhd.supabase.co/functions/v1/create-model-download-url";
+const SUPABASE_PUBLISHABLE_KEY: &str = "sb_publishable_JMOFx_LYWWkusmTdABVxRQ_1BkFvxw-";
+const HUGGING_FACE_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
-fn model_url(model_size: &str) -> String {
-    format!("{BASE_URL}/ggml-{model_size}.bin")
+fn hugging_face_model_url(model_size: &str) -> String {
+    format!("{HUGGING_FACE_BASE_URL}/ggml-{model_size}.bin")
+}
+
+#[derive(Serialize)]
+struct SignedModelUrlRequest<'a> {
+    #[serde(rename = "modelSize")]
+    model_size: &'a str,
+}
+
+#[derive(Deserialize)]
+struct SignedModelUrlResponse {
+    url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +259,11 @@ pub fn validate_model_file(model_size: &str, path: &Path) -> Result<ModelValidat
     })
 }
 
-pub async fn download_model(model_size: &str, state: Arc<DownloadState>) -> Result<(), AppError> {
+pub async fn download_model(
+    model_size: &str,
+    access_token: &str,
+    state: Arc<DownloadState>,
+) -> Result<(), AppError> {
     if state.active.load(Ordering::Relaxed) {
         return Err(AppError::model_download_failed(
             "A download is already in progress.",
@@ -257,7 +275,7 @@ pub async fn download_model(model_size: &str, state: Arc<DownloadState>) -> Resu
     state.total_bytes.store(0, Ordering::SeqCst);
     *state.model_size.lock().unwrap_or_else(|e| e.into_inner()) = model_size.to_string();
 
-    let result = do_download(model_size, &state).await;
+    let result = do_download(model_size, access_token, &state).await;
 
     state.active.store(false, Ordering::SeqCst);
 
@@ -273,13 +291,56 @@ pub async fn download_model(model_size: &str, state: Arc<DownloadState>) -> Resu
     result
 }
 
-async fn do_download(model_size: &str, state: &DownloadState) -> Result<(), AppError> {
-    let url = model_url(model_size);
-    let dest = whisper::model_path(model_size).map_err(AppError::model_download_failed)?;
+async fn signed_model_url(
+    client: &reqwest::Client,
+    model_size: &str,
+    access_token: &str,
+) -> Result<String, AppError> {
+    if access_token.trim().is_empty() {
+        return Err(AppError::model_download_failed(
+            "Sign in before downloading local Whisper models.",
+        ));
+    }
 
-    let client = reqwest::Client::new();
+    let response = client
+        .post(SIGNED_MODEL_URL_ENDPOINT)
+        .header("apikey", SUPABASE_PUBLISHABLE_KEY)
+        .bearer_auth(access_token)
+        .json(&SignedModelUrlRequest { model_size })
+        .send()
+        .await
+        .map_err(|e| AppError::model_download_failed(format!("Signed URL request error: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(AppError::model_download_failed(format!(
+            "Signed URL HTTP status {}",
+            response.status()
+        )));
+    }
+
+    let signed = response
+        .json::<SignedModelUrlResponse>()
+        .await
+        .map_err(|e| AppError::model_download_failed(format!("Signed URL response error: {e}")))?;
+
+    if signed.url.trim().is_empty() {
+        return Err(AppError::model_download_failed(
+            "Signed URL response did not include a download URL.",
+        ));
+    }
+
+    Ok(signed.url)
+}
+
+async fn download_from_url(
+    client: &reqwest::Client,
+    model_size: &str,
+    url: &str,
+    state: &DownloadState,
+) -> Result<(), AppError> {
+    let dest = whisper::model_path(model_size).map_err(AppError::model_download_failed)?;
     let resp = client
-        .get(&url)
+        .get(url)
         .send()
         .await
         .map_err(|e| AppError::model_download_failed(format!("Request error: {e}")))?;
@@ -332,6 +393,43 @@ async fn do_download(model_size: &str, state: &DownloadState) -> Result<(), AppE
         .map_err(|e| AppError::model_download_failed(format!("Rename error: {e}")))?;
 
     Ok(())
+}
+
+async fn do_download(
+    model_size: &str,
+    access_token: &str,
+    state: &DownloadState,
+) -> Result<(), AppError> {
+    let client = reqwest::Client::new();
+    let hugging_face_url = hugging_face_model_url(model_size);
+
+    match download_from_url(&client, model_size, &hugging_face_url, state).await {
+        Ok(()) => Ok(()),
+        Err(primary_error) => {
+            if let Ok(path) = whisper::model_path(model_size) {
+                let _ = std::fs::remove_file(path.with_extension("bin.part"));
+            }
+            state.bytes_downloaded.store(0, Ordering::SeqCst);
+            state.total_bytes.store(0, Ordering::SeqCst);
+
+            let fallback_url =
+                signed_model_url(&client, model_size, access_token)
+                    .await
+                    .map_err(|fallback_error| {
+                        AppError::model_download_failed(format!(
+                            "Hugging Face failed ({primary_error}); Pettals fallback failed ({fallback_error})"
+                        ))
+                    })?;
+
+            download_from_url(&client, model_size, &fallback_url, state)
+                .await
+                .map_err(|fallback_error| {
+                    AppError::model_download_failed(format!(
+                        "Hugging Face failed ({primary_error}); Pettals fallback failed ({fallback_error})"
+                    ))
+                })
+        }
+    }
 }
 
 pub async fn delete_model(model_size: &str) -> Result<(), String> {
