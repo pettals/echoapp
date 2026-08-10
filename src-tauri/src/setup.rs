@@ -133,6 +133,18 @@ pub fn validate_shortcut(shortcut: &str) -> ShortcutValidation {
                 | "f10"
                 | "f11"
                 | "f12"
+                | "f13"
+                | "f14"
+                | "f15"
+                | "f16"
+                | "f17"
+                | "f18"
+                | "f19"
+                | "f20"
+                | "f21"
+                | "f22"
+                | "f23"
+                | "f24"
         );
 
     if !valid_key {
@@ -234,6 +246,21 @@ fn accessibility_check() -> SetupCheck {
 
 pub fn get_status_with_credential_error(config: &AppConfig, credential_error: &str) -> SetupStatus {
     get_status_inner(config, Some(credential_error))
+}
+
+pub fn get_status_with_provider_error(config: &AppConfig, provider_error: &str) -> SetupStatus {
+    let mut status = get_status_inner(config, None);
+    if let Some(provider) = status
+        .checks
+        .iter_mut()
+        .find(|check| check.id == "provider")
+    {
+        provider.status = "error".to_string();
+        provider.message = provider_error.to_string();
+        provider.action_label = Some("Open Settings".to_string());
+    }
+    status.ready = false;
+    status
 }
 
 pub fn get_status(config: &AppConfig) -> SetupStatus {
@@ -381,5 +408,28 @@ pub fn open_help(target: &str) -> Result<(), String> {
     {
         let _ = target;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_shortcut;
+
+    #[test]
+    fn accepts_function_key_shortcuts_through_f24() {
+        for number in 1..=24 {
+            let shortcut = format!("F{number}");
+            assert!(
+                validate_shortcut(&shortcut).valid,
+                "{shortcut} should be accepted"
+            );
+        }
+
+        assert!(validate_shortcut("CommandOrControl+Shift+F24").valid);
+    }
+
+    #[test]
+    fn rejects_function_keys_outside_the_supported_range() {
+        assert!(!validate_shortcut("F25").valid);
     }
 }

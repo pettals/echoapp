@@ -8,9 +8,10 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { ChevronDown } from "./AureoleIcons";
 
-type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -71,6 +72,45 @@ export function IconButton({
   );
 }
 
+interface AnimatedIconSwapProps {
+  children: ReactNode;
+  className?: string;
+  iconKey: string;
+}
+
+export function AnimatedIconSwap({ children, className = "", iconKey }: AnimatedIconSwapProps) {
+  const reduceMotion = useReducedMotion() ?? false;
+
+  return (
+    <span className={`ui-animated-icon-swap ${className}`.trim()} aria-hidden>
+      <AnimatePresence initial={false} mode="wait">
+        <motion.span
+          className="ui-animated-icon-swap__item"
+          key={iconKey}
+          initial={
+            reduceMotion
+              ? { opacity: 0 }
+              : { opacity: 0, scale: 0.25, filter: "blur(4px)" }
+          }
+          animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+          exit={
+            reduceMotion
+              ? { opacity: 0 }
+              : { opacity: 0, scale: 0.25, filter: "blur(4px)" }
+          }
+          transition={
+            reduceMotion
+              ? { duration: 0 }
+              : { type: "spring", duration: 0.3, bounce: 0 }
+          }
+        >
+          {children}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+}
+
 interface CardProps extends HTMLAttributes<HTMLElement> {
   children: ReactNode;
 }
@@ -105,6 +145,123 @@ interface AlertProps {
 
 export function Alert({ children, tone = "info" }: AlertProps) {
   return <div className={`ui-alert ui-alert--${tone}`}>{children}</div>;
+}
+
+interface InlineNoticeProps extends HTMLAttributes<HTMLDivElement> {
+  action?: ReactNode;
+  children: ReactNode;
+  details?: ReactNode;
+  tone?: "info" | "success" | "warning" | "error";
+}
+
+export function InlineNotice({
+  action,
+  children,
+  className = "",
+  details,
+  tone = "info",
+  ...props
+}: InlineNoticeProps) {
+  return (
+    <div
+      className={`ui-inline-notice ui-inline-notice--${tone} ${className}`.trim()}
+      role={tone === "error" ? "alert" : "status"}
+      {...props}
+    >
+      <div className="ui-inline-notice__content">
+        <div>{children}</div>
+        {action && <div className="ui-inline-notice__action">{action}</div>}
+      </div>
+      {details && (
+        <details className="ui-inline-notice__details">
+          <summary>Details</summary>
+          <div>{details}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+interface DisclosureProps extends HTMLAttributes<HTMLDetailsElement> {
+  children: ReactNode;
+  defaultOpen?: boolean;
+  summary: ReactNode;
+  summaryMeta?: ReactNode;
+}
+
+export function Disclosure({
+  children,
+  className = "",
+  defaultOpen = false,
+  summary,
+  summaryMeta,
+  ...props
+}: DisclosureProps) {
+  return (
+    <details className={`ui-disclosure ${className}`.trim()} open={defaultOpen || undefined} {...props}>
+      <summary>
+        <span className="ui-disclosure__summary-copy">
+          <span>{summary}</span>
+          {summaryMeta && <span className="ui-disclosure__summary-meta">{summaryMeta}</span>}
+        </span>
+        <ChevronDown className="ui-disclosure__chevron" size={16} />
+      </summary>
+      <div className="ui-disclosure__body">{children}</div>
+    </details>
+  );
+}
+
+interface SettingsGroupProps extends Omit<HTMLAttributes<HTMLElement>, "title"> {
+  children: ReactNode;
+  description?: ReactNode;
+  title?: ReactNode;
+}
+
+export function SettingsGroup({
+  children,
+  className = "",
+  description,
+  title,
+  ...props
+}: SettingsGroupProps) {
+  return (
+    <section className={`ui-settings-group ${className}`.trim()} {...props}>
+      {(title || description) && (
+        <header className="ui-settings-group__header">
+          {title && <h3>{title}</h3>}
+          {description && <p>{description}</p>}
+        </header>
+      )}
+      <div className="ui-settings-group__body">{children}</div>
+    </section>
+  );
+}
+
+interface SettingsRowProps extends HTMLAttributes<HTMLDivElement> {
+  action?: ReactNode;
+  children?: ReactNode;
+  description?: ReactNode;
+  label: ReactNode;
+}
+
+export function SettingsRow({
+  action,
+  children,
+  className = "",
+  description,
+  label,
+  ...props
+}: SettingsRowProps) {
+  return (
+    <div className={`ui-settings-row ${className}`.trim()} {...props}>
+      <div className="ui-settings-row__copy">
+        <strong>{label}</strong>
+        {description && <span>{description}</span>}
+      </div>
+      {action && <div className="ui-settings-row__action">{action}</div>}
+      {children && <div className="ui-settings-row__content">{children}</div>}
+    </div>
+  );
 }
 
 interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {

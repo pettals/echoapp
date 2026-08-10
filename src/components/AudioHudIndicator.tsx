@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent } from "react";
-import { AppWindow, Check, Copy, Mic, StickyNote } from "lucide-react";
+import { AppWindow, Check, Copy, FileText, Mic } from "./AureoleIcons";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import "./AudioHudIndicator.css";
 
@@ -54,8 +54,8 @@ const idleAnimationDuration = 0.42;
 const idleCollapseDuration = idleAnimationDuration * 1.5;
 const idleActionRevealDuration = idleAnimationDuration * 0.28;
 const idleActionRevealDelay = idleAnimationDuration - idleActionRevealDuration;
-const IDLE_COMPACT_WIDTH = 56;
-const IDLE_COMPACT_HEIGHT = 14;
+const IDLE_COMPACT_WIDTH = 28;
+const IDLE_COMPACT_HEIGHT = 7;
 const IDLE_EXPANDED_WIDTH = 252;
 const IDLE_EXPANDED_HEIGHT = 46;
 const RECORDING_WIDTH = 420;
@@ -73,8 +73,8 @@ function stateLabel(state: AudioHudIndicatorState, completeLabel?: string): stri
   if (state === "complete") return completeLabel ?? "Complete";
   if (state === "copy") return "Copied";
   if (state === "error") return "Needs attention";
-  if (state === "processing") return "Processing";
-  if (state === "recording") return "Recording";
+  if (state === "processing") return "Transcribing";
+  if (state === "recording") return "Listening";
   return "Ready";
 }
 
@@ -381,11 +381,11 @@ export default function AudioHudIndicator({
                 onFocus={() => setActiveAction("mic")}
                 onBlur={() => setActiveAction((current) => (current === "mic" ? null : current))}
                 variants={actionItemVariants}
-                whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+                whileTap={reduceMotion ? undefined : { scale: 0.96 }}
               >
                 {renderShortcutLabel("mic", shortcutLabel)}
                 <span className="audio-hud__action-circle">
-                  <Mic size={17} strokeWidth={2.6} />
+                  <Mic size={17} />
                 </span>
               </motion.button>
 
@@ -401,11 +401,11 @@ export default function AudioHudIndicator({
                 onFocus={() => setActiveAction("notepad")}
                 onBlur={() => setActiveAction((current) => (current === "notepad" ? null : current))}
                 variants={actionItemVariants}
-                whileTap={reduceMotion ? undefined : { scale: 0.94 }}
+                whileTap={reduceMotion ? undefined : { scale: 0.96 }}
               >
                 {renderShortcutLabel("notepad", notepadLabel)}
                 <span className="audio-hud__action-circle">
-                  <StickyNote size={17} strokeWidth={2.5} />
+                  <FileText size={17} />
                 </span>
               </motion.button>
             </motion.div>
@@ -424,7 +424,7 @@ export default function AudioHudIndicator({
                 className={`audio-hud__target-icon${targetIconUrl ? " audio-hud__target-icon--image" : ""}`}
                 aria-hidden
               >
-                {targetIconUrl ? <img src={targetIconUrl} alt="" /> : <AppWindow size={17} strokeWidth={2.35} />}
+                {targetIconUrl ? <img src={targetIconUrl} alt="" /> : <AppWindow size={17} />}
               </span>
               <p className="audio-hud__live-text" aria-live="polite">
                 <AnimatePresence initial={false} mode="wait">
@@ -496,7 +496,7 @@ export default function AudioHudIndicator({
               exit={{ opacity: 0, scale: reduceMotion ? 1 : 0.9 }}
               transition={reduceMotion ? { duration: 0.01 } : actionSpring}
             >
-              <Check size={15} strokeWidth={3} />
+              <Check size={15} />
             </motion.span>
           ) : null}
 
@@ -537,9 +537,9 @@ export default function AudioHudIndicator({
                   hidden: { opacity: 0, scale: reduceMotion ? 1 : 0.86 },
                   visible: { opacity: 1, scale: 1, transition: reduceMotion ? { duration: 0.01 } : actionSpring },
                 }}
-                whileTap={reduceMotion ? undefined : { scale: 0.92 }}
+                whileTap={reduceMotion ? undefined : { scale: 0.96 }}
               >
-                <Copy size={15} strokeWidth={2.4} />
+                <Copy size={15} />
               </motion.button>
               <motion.span
                 className="audio-hud__countdown"

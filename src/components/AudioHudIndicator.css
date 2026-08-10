@@ -1,12 +1,18 @@
 .audio-hud {
-  --hud-black: rgba(0, 0, 0, 0.95);
-  --hud-text: rgba(255, 255, 255, 0.96);
-  --hud-muted: rgba(255, 255, 255, 0.64);
-  --hud-red: #ff3b30;
-  --hud-green: #34c759;
-  --hud-blue: #64d2ff;
+  --hud-black: #000000;
+  --hud-text: #f7f8ff;
+  --hud-muted: #b8c1d6;
+  --hud-red: #ff7382;
+  --hud-green: #48d99a;
+  --hud-blue: #a394ff;
+  --hud-action-mic: var(--accent-gradient);
+  --hud-action-notepad: #20242c;
   --hud-motion-ease: cubic-bezier(0.2, 0, 0, 1);
   --hud-ambient: transparent;
+  --hud-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 18px 42px rgba(0, 0, 0, 0.28);
+  --hud-image-outline: rgba(255, 255, 255, 0.1);
   width: 100%;
   height: 100%;
   display: grid;
@@ -27,7 +33,7 @@
   border: 0;
   border-radius: 999px;
   background: var(--hud-black);
-  box-shadow: none;
+  box-shadow: var(--hud-shadow);
   isolation: isolate;
 }
 
@@ -69,8 +75,8 @@
 }
 
 .audio-hud--idle .audio-hud__island {
-  width: 56px;
-  height: 14px;
+  width: 28px;
+  height: 7px;
   overflow: visible;
 }
 
@@ -115,20 +121,20 @@
 }
 
 .audio-hud--recording {
-  --hud-ambient: rgba(255, 59, 48, 0.34);
+  --hud-ambient: var(--accent-soft);
 }
 
 .audio-hud--processing {
-  --hud-ambient: rgba(100, 210, 255, 0.26);
+  --hud-ambient: var(--info-soft);
 }
 
 .audio-hud--complete,
 .audio-hud--copy {
-  --hud-ambient: rgba(52, 199, 89, 0.28);
+  --hud-ambient: var(--success-soft);
 }
 
 .audio-hud--error {
-  --hud-ambient: rgba(255, 69, 58, 0.32);
+  --hud-ambient: var(--error-soft);
 }
 
 .audio-hud--recording .audio-hud__island::before,
@@ -145,7 +151,7 @@
 .audio-hud--complete .audio-hud__island,
 .audio-hud--copy .audio-hud__island,
 .audio-hud--error .audio-hud__island {
-  box-shadow: none;
+  box-shadow: var(--hud-shadow);
 }
 
 .audio-hud--recording .audio-hud__island::before {
@@ -160,8 +166,8 @@
 .audio-hud__compact-mark {
   position: absolute;
   inset: 50% auto auto 50%;
-  width: 22px;
-  height: 3px;
+  width: 11px;
+  height: 1.5px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.11);
   translate: -50% -50%;
@@ -181,14 +187,14 @@
 
 .audio-hud__action {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
   border-radius: 999px;
-  color: white;
+  color: var(--hud-text);
   background: transparent;
   cursor: pointer;
   pointer-events: auto;
@@ -220,8 +226,8 @@
   inset: -6px;
   z-index: -1;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--hud-action-highlight) 72%, white 10%);
-  background: radial-gradient(circle, color-mix(in srgb, var(--hud-action-highlight) 32%, transparent) 0%, transparent 68%);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  background: radial-gradient(circle, var(--accent-soft) 0%, transparent 68%);
   opacity: 0;
   pointer-events: none;
   transform: scale(0.82);
@@ -231,13 +237,16 @@
 }
 
 .audio-hud__action--mic .audio-hud__action-circle {
-  --hud-action-highlight: var(--hud-red);
-  background: var(--hud-red);
+  --hud-action-highlight: var(--accent);
+  background: var(--hud-action-mic);
+  color: var(--accent-contrast);
 }
 
 .audio-hud__action--notepad .audio-hud__action-circle {
-  --hud-action-highlight: var(--hud-green);
-  background: var(--hud-green);
+  --hud-action-highlight: var(--accent);
+  background: var(--hud-action-notepad);
+  color: var(--hud-text);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 .audio-hud__action:hover .audio-hud__action-circle,
@@ -247,9 +256,13 @@
   transform: translateY(-1px);
 }
 
+.audio-hud__action:active .audio-hud__action-circle {
+  transform: scale(0.96);
+}
+
 .recording-hud-shell--platform-macos .audio-hud__action:hover,
 .recording-hud-shell--platform-macos .audio-hud__action:focus-visible {
-  color: #ffffff;
+  color: var(--hud-text);
   outline: none;
 }
 
@@ -257,8 +270,8 @@
 .recording-hud-shell--platform-macos .audio-hud__action:focus-visible .audio-hud__action-circle {
   filter: brightness(1.12) saturate(1.08);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--hud-action-highlight) 68%, white 14%),
-    0 0 14px color-mix(in srgb, var(--hud-action-highlight) 44%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent),
+    0 0 14px color-mix(in srgb, var(--accent) 18%, transparent);
   transform: translateY(-1px);
 }
 
@@ -287,6 +300,7 @@
   background: rgba(0, 0, 0, 0.86);
   font-size: 9px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
   letter-spacing: 0;
   white-space: nowrap;
@@ -294,7 +308,6 @@
   text-overflow: ellipsis;
   pointer-events: none;
   translate: -50% 0;
-  will-change: opacity, transform;
 }
 
 .audio-hud__waveform {
@@ -335,7 +348,7 @@
   border-radius: 9px;
   color: rgba(255, 255, 255, 0.78);
   background: rgba(255, 255, 255, 0.08);
-  box-shadow: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   overflow: hidden;
 }
 
@@ -348,6 +361,8 @@
   height: 24px;
   display: block;
   object-fit: contain;
+  outline: 1px solid var(--hud-image-outline);
+  outline-offset: -1px;
 }
 
 .audio-hud__target-icon--image {
@@ -373,6 +388,7 @@
   text-align: left;
   letter-spacing: 0;
   overflow: hidden;
+  text-wrap: pretty;
 }
 
 .audio-hud__live:not(.audio-hud__live--compact) .audio-hud__live-text {
@@ -411,7 +427,6 @@
 .audio-hud__live-word {
   display: inline-block;
   margin-right: 3px;
-  will-change: opacity, transform;
 }
 
 .audio-hud__live-placeholder {
@@ -456,6 +471,7 @@
 }
 
 .audio-hud__stop-button {
+  position: relative;
   width: 20px;
   height: 20px;
   display: grid;
@@ -474,6 +490,15 @@
     opacity 120ms var(--hud-motion-ease);
 }
 
+.audio-hud__stop-button::after {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+}
+
 .audio-hud__stop-button span {
   width: 10px;
   height: 10px;
@@ -488,6 +513,10 @@
   background: rgba(255, 59, 48, 0.14);
   outline: none;
   transform: scale(1.04);
+}
+
+.audio-hud__stop-button:active {
+  transform: scale(0.96);
 }
 
 .audio-hud__stop-button:disabled {
@@ -529,8 +558,8 @@
   display: grid;
   place-items: center;
   border-radius: 999px;
-  color: white;
-  background: rgba(52, 199, 89, 0.96);
+  color: #082116;
+  background: var(--hud-green);
   box-shadow: none;
 }
 
@@ -556,6 +585,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+  text-wrap: pretty;
 }
 
 .audio-hud__copy-button,
@@ -582,6 +612,10 @@
   transform: scale(1.04);
 }
 
+.audio-hud__copy-button:active {
+  transform: scale(0.96);
+}
+
 .audio-hud__countdown {
   --copy-progress: 1;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -590,6 +624,7 @@
     rgba(255, 255, 255, 0.1);
   font-size: 12px;
   font-weight: 800;
+  font-variant-numeric: tabular-nums;
   transition: background 120ms linear;
 }
 
@@ -602,6 +637,7 @@
   font-weight: 700;
   line-height: 1.24;
   text-align: center;
+  text-wrap: pretty;
 }
 
 @keyframes audio-hud-breathe {

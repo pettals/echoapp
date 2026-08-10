@@ -7,9 +7,11 @@ const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in wind
 export const SUPABASE_URL = "https://glkriavrwsissibmwxhd.supabase.co";
 export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_JMOFx_LYWWkusmTdABVxRQ_1BkFvxw-";
 export const AUTH_CALLBACK_URL = "echo://auth/callback";
+export const AUTH_GOOGLE_CALLBACK_URL = "https://pettals.co.uk/echo/auth/callback/";
 export const AUTH_RESET_PASSWORD_URL = "echo://auth/reset-password";
 const AUTH_STORAGE_KEY = "sb-glkriavrwsissibmwxhd-auth-token";
 const AUTH_CODE_VERIFIER_STORAGE_KEY = `${AUTH_STORAGE_KEY}-code-verifier`;
+const AUTH_USER_STORAGE_KEY = `${AUTH_STORAGE_KEY}-user`;
 const AUTH_CODE_VERIFIER_FALLBACK_KEY = "echo-pkce-code-verifier";
 const RESTART_GOOGLE_SIGN_IN_MESSAGE = "Start Google sign-in again from Echo.";
 
@@ -17,6 +19,11 @@ export interface AuthUserSummary {
   id: string;
   email: string;
   provider: string;
+}
+
+export interface SignUpProfile {
+  firstName: string;
+  lastName: string;
 }
 
 export type AuthEventHandler = (event: AuthChangeEvent, session: Session | null) => void;
@@ -31,24 +38,65 @@ interface PkceTokenResponse {
   message?: string;
 }
 
+function localStorageGet(key: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function localStorageSet(key: string, value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Secure storage remains the source of truth in Tauri builds.
+  }
+}
+
+function localStorageRemove(key: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function isMigratableAuthKey(key: string) {
+  return key === AUTH_STORAGE_KEY || key === AUTH_USER_STORAGE_KEY;
+}
+
 const tauriAuthStorage: SupportedStorage = {
   async getItem(key) {
-    if (!HAS_TAURI) return window.localStorage.getItem(key);
-    return invoke<string | null>("get_auth_storage", { key });
+    if (!HAS_TAURI) return localStorageGet(key);
+    const stored = await invoke<string | null>("get_auth_storage", { key });
+    if (stored || !isMigratableAuthKey(key)) return stored;
+
+    const legacyStored = localStorageGet(key);
+    if (!legacyStored) return null;
+
+    await invoke("set_auth_storage", { key, value: legacyStored });
+    localStorageRemove(key);
+    return legacyStored;
   },
   async setItem(key, value) {
     if (!HAS_TAURI) {
-      window.localStorage.setItem(key, value);
+      localStorageSet(key, value);
       return;
     }
     await invoke("set_auth_storage", { key, value });
+    localStorageRemove(key);
   },
   async removeItem(key) {
     if (!HAS_TAURI) {
-      window.localStorage.removeItem(key);
+      localStorageRemove(key);
       return;
     }
     await invoke("delete_auth_storage", { key });
+    localStorageRemove(key);
   },
 };
 
@@ -74,25 +122,18 @@ async function pkceChallenge(verifier: string) {
 
 async function setRawAuthStorage(key: string, value: string) {
   await tauriAuthStorage.setItem(key, value);
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(key, value);
-  }
+  localStorageSet(key, value);
 }
 
 async function getRawAuthStorage(key: string) {
   const stored = await tauriAuthStorage.getItem(key);
   if (stored) return stored;
-  if (typeof window !== "undefined") {
-    return window.localStorage.getItem(key);
-  }
-  return null;
+  return localStorageGet(key);
 }
 
 async function removeRawAuthStorage(key: string) {
   await tauriAuthStorage.removeItem(key);
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(key);
-  }
+  localStorageRemove(key);
 }
 
 async function persistPkceVerifier(verifier: string, redirectType?: "recovery") {
@@ -174,6 +215,16 @@ function isDefiniteStaleCodeFailure(status: number, payload: PkceTokenResponse) 
   );
 }
 
+function isInvalidStoredSessionError(error: unknown) {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return (
+    message.includes("invalid refresh token") ||
+    message.includes("refresh token not found") ||
+    message.includes("refresh_token_not_found") ||
+    message.includes("invalid_grant")
+  );
+}
+
 async function exchangePkceCodeForSession(code: string) {
   const verifier = await getPkceVerifier();
   const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
@@ -206,9 +257,17 @@ async function exchangePkceCodeForSession(code: string) {
     refresh_token: payload.refresh_token,
   });
   if (error) throw error;
+  if (!data.session) {
+    throw new Error("Echo could not persist your sign-in session. Start Google sign-in again from Echo.");
+  }
+
+  const confirmedSession = await getFreshSession(data.session);
+  if (!confirmedSession?.access_token) {
+    throw new Error("Echo could not restore your sign-in session. Start Google sign-in again from Echo.");
+  }
 
   await clearPkceVerifier();
-  return data.session;
+  return confirmedSession;
 }
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
@@ -217,7 +276,9 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     detectSessionInUrl: false,
     flowType: "pkce",
     persistSession: true,
+    storageKey: AUTH_STORAGE_KEY,
     storage: tauriAuthStorage,
+    userStorage: tauriAuthStorage,
   },
 });
 
@@ -238,6 +299,41 @@ export async function getSession() {
   return data.session;
 }
 
+export async function getFreshSession(currentSession?: Session | null) {
+  try {
+    const session = await getSession();
+    if (session?.access_token) return session;
+  } catch (e) {
+    if (!currentSession?.refresh_token) throw e;
+  }
+
+  if (!currentSession?.refresh_token) return null;
+  const { data, error } = await supabase.auth.refreshSession(currentSession);
+  if (error) throw error;
+  return data.session;
+}
+
+export async function restorePersistedSession() {
+  try {
+    return await getFreshSession(null);
+  } catch (e) {
+    if (isInvalidStoredSessionError(e)) {
+      await clearAuthSessionStorage();
+      return null;
+    }
+    throw e;
+  }
+}
+
+export async function clearAuthSessionStorage() {
+  await Promise.allSettled([
+    tauriAuthStorage.removeItem(AUTH_STORAGE_KEY),
+    tauriAuthStorage.removeItem(AUTH_USER_STORAGE_KEY),
+    removeRawAuthStorage(AUTH_CODE_VERIFIER_STORAGE_KEY),
+    removeRawAuthStorage(AUTH_CODE_VERIFIER_FALLBACK_KEY),
+  ]);
+}
+
 export function onAuthStateChange(handler: AuthEventHandler) {
   return supabase.auth.onAuthStateChange(handler).data.subscription;
 }
@@ -250,7 +346,7 @@ export async function signInWithGoogle() {
   const url = new URL(`${SUPABASE_URL}/auth/v1/authorize`);
   url.search = new URLSearchParams({
     provider: "google",
-    redirect_to: AUTH_CALLBACK_URL,
+    redirect_to: AUTH_GOOGLE_CALLBACK_URL,
     scopes: "openid email profile",
     code_challenge: challenge,
     code_challenge_method: method,
@@ -268,7 +364,7 @@ export async function signInWithGoogleViaClient() {
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: {
-      redirectTo: AUTH_CALLBACK_URL,
+      redirectTo: AUTH_GOOGLE_CALLBACK_URL,
       scopes: "openid email profile",
       skipBrowserRedirect: HAS_TAURI,
       queryParams: {
@@ -294,12 +390,23 @@ export async function signInWithPassword(email: string, password: string) {
   return data.session;
 }
 
-export async function signUpWithPassword(email: string, password: string) {
+export async function signUpWithPassword(
+  email: string,
+  password: string,
+  profile: SignUpProfile
+) {
+  const firstName = profile.firstName.trim();
+  const lastName = profile.lastName.trim();
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
       emailRedirectTo: AUTH_CALLBACK_URL,
+      data: {
+        first_name: firstName,
+        last_name: lastName,
+        full_name: `${firstName} ${lastName}`,
+      },
     },
   });
   if (error) throw error;
@@ -327,6 +434,10 @@ export async function exchangeCodeForSession(code: string) {
 }
 
 export async function signOut() {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+  try {
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+  } finally {
+    await clearAuthSessionStorage();
+  }
 }

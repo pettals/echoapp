@@ -23,3 +23,13 @@ Use this checklist before marking release lifecycle tasks complete.
 - Enabling the toggle and saving Settings registers Echo with the operating system startup/login items.
 - Reopening Settings reflects the current operating system launch-at-login state.
 - Disabling the toggle and saving Settings removes Echo from startup/login items.
+
+## Function-Key Shortcuts
+
+- Settings and onboarding offer F1-F24 without requiring the key to be captured physically.
+- Selecting an F key follows the existing save, validation, and registration flow.
+- On macOS with default top-row behavior, holding Fn/Globe with the selected F key starts dictation and releasing it stops dictation.
+- The bare top-row key keeps its brightness, volume, or media action when standard function keys are disabled.
+- With `Use F1, F2, etc. keys as standard function keys` enabled in macOS, the selected F key works without Fn/Globe.
+- Existing captured shortcuts such as Command+D continue to register and run normally.
+- On an extended keyboard, verify at least one available F13-F24 key.

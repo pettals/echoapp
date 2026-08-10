@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#070913">
+    <meta
+      name="description"
+      content="Echo turns speech into polished text wherever your cursor is."
+    >
+    <title>Echo | Speak freely. Write everywhere.</title>
+    <link rel="icon" href="assets/echo-mark.png" type="image/png">
+    <link
+      rel="preload"
+      href="assets/echo-mark.webp"
+      as="image"
+      type="image/webp"
+    >
+    <link
+      rel="preload"
+      href="assets/echo-app.avif"
+      as="image"
+      type="image/avif"
+    >
+    <link rel="stylesheet" href="styles.css">
+    <script>
+      document.documentElement.classList.remove("no-js");
+      document.documentElement.classList.add("js");
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#product">Skip to Echo</a>
+
+    <main>
+      <section class="story" data-story aria-label="Introducing Echo">
+        <div class="scene" data-scene>
+          <div class="ambient" aria-hidden="true">
+            <picture>
+              <source srcset="assets/hero-echo.avif" type="image/avif">
+              <source srcset="assets/hero-echo.webp" type="image/webp">
+              <img
+                src="assets/hero-echo.png"
+                alt=""
+                width="1672"
+                height="941"
+                fetchpriority="high"
+              >
+            </picture>
+            <span class="ambient__wash"></span>
+            <span class="ambient__haze ambient__haze--one"></span>
+            <span class="ambient__haze ambient__haze--two"></span>
+          </div>
+
+          <div class="opening" data-opening>
+            <picture class="opening__mark" data-mark>
+              <source srcset="assets/echo-mark.webp" type="image/webp">
+              <img
+                src="assets/echo-mark.png"
+                alt="Echo dolphin"
+                width="256"
+                height="256"
+              >
+            </picture>
+            <p class="opening__wordmark" data-wordmark>Echo</p>
+          </div>
+
+          <article class="product-panel" id="product" data-panel>
+            <div class="product-panel__edge" aria-hidden="true"></div>
+            <div class="product-panel__art" aria-hidden="true">
+              <picture>
+                <source srcset="assets/hero-echo.avif" type="image/avif">
+                <source srcset="assets/hero-echo.webp" type="image/webp">
+                <img
+                  src="assets/hero-echo.png"
+                  alt=""
+                  width="1672"
+                  height="941"
+                >
+              </picture>
+            </div>
+
+            <div class="product-copy" data-product-copy>
+              <h1>Speak freely.<br><span>Write everywhere.</span></h1>
+              <p>
+                Hold one shortcut. Echo turns speech into polished text wherever
+                your cursor is.
+              </p>
+              <div class="product-copy__action">
+                <button type="button" disabled aria-describedby="availability">
+                  Notify me
+                </button>
+                <span>Waitlist opens soon</span>
+              </div>
+              <p class="availability" id="availability">
+                Launching first on macOS. Windows follows.
+              </p>
+            </div>
+
+            <figure class="app-visual" data-app-visual>
+              <picture>
+                <source srcset="assets/echo-app.avif" type="image/avif">
+                <source srcset="assets/echo-app.webp" type="image/webp">
+                <img
+                  src="assets/echo-app.png"
+                  alt="Echo Notepad with two local notes"
+                  width="1200"
+                  height="600"
+                >
+              </picture>
+            </figure>
+
+            <ol class="proof-grid" aria-label="Why Echo" data-proofs>
+              <li class="proof proof--shortcut" data-proof>
+                <div class="proof__visual shortcut-keys" aria-hidden="true">
+                  <kbd>⌘</kbd><kbd>D</kbd>
+                </div>
+                <div>
+                  <h2>One shortcut, anywhere</h2>
+                  <p>Hold Command+D from any app without breaking focus.</p>
+                </div>
+              </li>
+
+              <li class="proof proof--feedback" data-proof>
+                <div class="proof__visual hud-crop" aria-hidden="true">
+                  <picture>
+                    <source srcset="assets/echo-hud.webp" type="image/webp">
+                    <img
+                      src="assets/echo-hud.png"
+                      alt=""
+                      width="1200"
+                      height="600"
+                    >
+                  </picture>
+                </div>
+                <div>
+                  <h2>Live feedback</h2>
+                  <p>See the target app, waveform, and transcript as you speak.</p>
+                </div>
+              </li>
+
+              <li class="proof proof--paste" data-proof>
+                <div class="proof__visual paste-result" aria-hidden="true">
+                  <span>Meeting notes are ready.</span>
+                  <i></i>
+                  <strong>Pasted</strong>
+                </div>
+                <div>
+                  <h2>Text lands in place</h2>
+                  <p>Echo cleans and pastes it, with clipboard fallback.</p>
+                </div>
+              </li>
+
+              <li class="proof proof--private" data-proof>
+                <div class="proof__visual local-state" aria-hidden="true">
+                  <span>On-device Whisper</span>
+                  <strong>Offline ready</strong>
+                </div>
+                <div>
+                  <h2>Private when you choose</h2>
+                  <p>Run raw transcription locally, even without a connection.</p>
+                </div>
+              </li>
+            </ol>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a class="footer-brand" href="#product" aria-label="Back to Echo">
+        <img src="assets/echo-mark.png" alt="" width="28" height="28">
+        <span>Echo</span>
+      </a>
+      <p>© 2026 Pettal Technology</p>
+      <nav aria-label="Legal">
+        <a href="https://pettals.co.uk/echo/privacy.html">Privacy</a>
+        <a href="https://pettals.co.uk/echo/terms.html">Terms</a>
+      </nav>
+    </footer>
+
+    <noscript>
+      <p class="noscript-note">
+        Motion is optional. Every Echo detail remains available on this page.
+      </p>
+    </noscript>
+
+    <script src="vendor/gsap.min.js"></script>
+    <script src="vendor/ScrollTrigger.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>

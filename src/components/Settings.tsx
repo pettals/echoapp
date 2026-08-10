@@ -1,41 +1,33 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  CheckCircle2,
   Cloud,
-  Command,
-  Copy,
   Cpu,
-  FileText,
-  History,
-  LogOut,
-  Mic,
-  Moon,
-  Monitor,
-  Power,
   RefreshCw,
-  Save,
   Shield,
-  Sparkles,
-  Sun,
-  User,
   Volume2,
   X,
-} from "lucide-react";
+} from "./AureoleIcons";
 import { invoke } from "@tauri-apps/api/core";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import type { AppConfig, AppearanceTheme } from "../App";
 import type { AuthUserSummary } from "../auth";
 import { getSession } from "../auth";
+import type { EntitlementStatus } from "../entitlements";
+import ShortcutCapture from "./ShortcutCapture";
 import {
   Alert,
   Button,
   Card,
   Chip,
+  Disclosure,
   Field,
   IconButton,
+  InlineNotice,
   Progress,
   SegmentedControl,
   SelectField,
+  SettingsGroup,
+  SettingsRow,
   Toggle,
 } from "./ui";
 import "./Settings.css";
@@ -77,27 +69,18 @@ interface GroqReadiness {
   cleanup_model_ok: boolean;
 }
 
-interface SupportDiagnostics {
-  generatedAt: string;
-  appVersion: string;
-  platform: string;
-  arch: string;
-  modelProvider: string;
-  setupReady: boolean;
-  historyItemCount: number;
-  notepadNoteCount: number;
-  statsTotalWords: number;
-  statsDictationCount: number;
-  recentErrors: Array<{ code: string; context: string; retryable: boolean }>;
-  privacy: string[];
-}
-
 interface SettingsProps {
   authUser: AuthUserSummary | null;
   config: AppConfig;
+  entitlement: EntitlementStatus;
+  entitlementMessage?: string;
+  entitlementChecking?: boolean;
+  checkoutPending?: boolean;
   onSave: (config: AppConfig) => Promise<void>;
   onCancel: () => void;
   onClearInsights?: () => Promise<void>;
+  onStartCheckout: () => Promise<void>;
+  onRefreshEntitlement: () => Promise<EntitlementStatus>;
   onSignOut: () => Promise<void>;
   onOpenOnboarding?: () => void;
   onPreviewAppearance?: (theme: AppearanceTheme) => void;
@@ -107,7 +90,6 @@ interface SettingsProps {
 }
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt"]);
 
 const TRANSCRIPTION_MODELS = [
   { label: "Whisper Large v3 Turbo (fast)", value: "whisper-large-v3-turbo" },
@@ -130,34 +112,37 @@ const SOUND_OPTIONS = [
 ];
 
 const LOCAL_THREAD_OPTIONS = [
-  { label: "Balanced Auto", value: "" },
-  { label: "1 thread", value: "1" },
-  { label: "2 threads", value: "2" },
-  { label: "4 threads", value: "4" },
-  { label: "6 threads", value: "6" },
-  { label: "8 threads", value: "8" },
+  { label: "Balanced", value: "" },
+  { label: "Light", value: "1" },
+  { label: "Steady", value: "2" },
+  { label: "Fast", value: "4" },
+  { label: "Faster", value: "6" },
+  { label: "Fastest", value: "8" },
+];
+const SETTINGS_EASE = [0.2, 0.8, 0.2, 1] as const;
+
+type SettingsTabId = "account" | "dictation" | "input" | "app";
+
+const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string }> = [
+  { id: "account", label: "Account" },
+  { id: "dictation", label: "Dictation" },
+  { id: "input", label: "Input" },
+  { id: "app", label: "App" },
 ];
 
-function normalizeShortcutKey(key: string): string {
-  if (key === " ") return "Space";
-  if (key.startsWith("Arrow")) return key.replace("Arrow", "");
-  if (key === "Esc") return "Escape";
-  if (key.length === 1) return key.toUpperCase();
-  return key;
-}
-
-function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElement>): string | null {
-  if (MODIFIER_KEYS.has(event.key)) return null;
-
-  const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) parts.push("CommandOrControl");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.altKey) parts.push("Alt");
-
-  const key = normalizeShortcutKey(event.key);
-  if (!parts.includes(key)) parts.push(key);
-
-  return parts.join("+");
+function formatShortcutForDisplay(shortcut: string): string {
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  return shortcut
+    .split(/\s*\+\s*/)
+    .map((key) => {
+      if (key.toLowerCase() === "commandorcontrol") return isMac ? "⌘" : "Ctrl";
+      if (key.toLowerCase() === "command") return "⌘";
+      if (key.toLowerCase() === "control") return isMac ? "⌃" : "Ctrl";
+      if (key.toLowerCase() === "shift") return isMac ? "⇧" : "Shift";
+      if (key.toLowerCase() === "alt" || key.toLowerCase() === "option") return isMac ? "⌥" : "Alt";
+      return key;
+    })
+    .join(" + ");
 }
 
 function formatBytes(bytes: number): string {
@@ -183,44 +168,144 @@ function formatErrorMessage(error: unknown): string {
 
 function SettingsSection({
   children,
-  icon,
+  className = "",
+  description,
   title,
 }: {
   children: React.ReactNode;
-  icon: React.ReactNode;
+  className?: string;
+  description?: React.ReactNode;
+  icon?: React.ReactNode;
   title: string;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
+  const sectionVariants: Variants = reduceMotion
+    ? {
+        hidden: { opacity: 0 },
+        visible: { opacity: 1, transition: { duration: 0 } },
+      }
+    : {
+        hidden: { opacity: 0, y: 8, filter: "blur(4px)" },
+        visible: {
+          opacity: 1,
+          y: 0,
+          filter: "blur(0px)",
+          transition: { duration: 0.22, ease: SETTINGS_EASE },
+        },
+      };
 
   return (
-    <motion.section
-      className="ui-card settings-section"
-      initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+    <motion.div
+      className={className}
+      initial="hidden"
+      animate="visible"
+      variants={sectionVariants}
     >
-      <div className="settings-section__header">
-        <span className="settings-section-icon">{icon}</span>
-        <h3>{title}</h3>
-      </div>
-      <div className="settings-section__body">{children}</div>
-    </motion.section>
+      <SettingsGroup className="settings-section" description={description} title={title}>
+        <div className="settings-section__body">{children}</div>
+      </SettingsGroup>
+    </motion.div>
+  );
+}
+
+function SettingsFadeTabs({
+  active,
+  onChange,
+}: {
+  active: SettingsTabId;
+  onChange: (tab: SettingsTabId) => void;
+}) {
+  const handleChange = (tab: SettingsTabId) => {
+    const scroller = document.querySelector<HTMLElement>(".content-main-col");
+    if (scroller) {
+      scroller.scrollLeft = 0;
+      scroller.scrollTop = 0;
+    }
+    onChange(tab);
+  };
+
+  return (
+    <nav className="settings-fade-tabs" aria-label="Settings sections">
+      {SETTINGS_TABS.map((tab) => (
+        <button
+          aria-current={active === tab.id ? "page" : undefined}
+          className={`settings-fade-tab${active === tab.id ? " is-active" : ""}`}
+          key={tab.id}
+          onClick={() => handleChange(tab.id)}
+          type="button"
+        >
+          {tab.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function SettingsStatusSummary({
+  onOpenOnboarding,
+  onRefreshSetup,
+  ready,
+  setupStatus,
+}: {
+  onOpenOnboarding?: () => void;
+  onRefreshSetup?: () => Promise<SetupStatus | null>;
+  ready?: boolean;
+  setupStatus?: SetupStatus | null;
+}) {
+  const blockers = setupStatus?.checks.filter((check) => check.status !== "ok") ?? [];
+  const firstBlocker = blockers[0];
+
+  if (ready !== false || !firstBlocker) return null;
+
+  return (
+    <InlineNotice
+      className="settings-status-summary"
+      aria-label="Setup needs attention"
+      tone="warning"
+      action={
+        onOpenOnboarding ? (
+          <Button size="sm" variant="secondary" onClick={onOpenOnboarding}>
+            Fix setup
+          </Button>
+        ) : undefined
+      }
+      details={
+        <div className="settings-readiness-details">
+          {blockers.map((check) => (
+            <div key={check.id}>
+              <strong>{check.label}</strong>
+              <span>{check.message}</span>
+            </div>
+          ))}
+          {onRefreshSetup && (
+            <Button size="sm" variant="ghost" onClick={() => void onRefreshSetup()}>
+              Refresh checks
+            </Button>
+          )}
+        </div>
+      }
+    >
+      <strong>{firstBlocker.label} needs attention.</strong> {firstBlocker.message}
+    </InlineNotice>
   );
 }
 
 function ProviderCard({
   active,
+  ariaLabel,
   description,
-  icon,
   label,
+  locked = false,
   note,
   onClick,
 }: {
   active: boolean;
+  ariaLabel?: string;
   description: string;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
+  locked?: boolean;
   note?: string;
-  label: string;
+  label: React.ReactNode;
   onClick: () => void;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
@@ -230,24 +315,73 @@ function ProviderCard({
       type="button"
       className={`settings-choice settings-choice--${active ? "active" : "inactive"} provider-card provider-card--${
         active ? "active" : "inactive"
-      }`}
+      }${locked ? " provider-card--locked" : ""}`}
+      aria-label={ariaLabel}
       aria-pressed={active}
       onClick={onClick}
       whileHover={reduceMotion ? undefined : { y: -1 }}
-      whileTap={reduceMotion ? undefined : { scale: 0.98 }}
+      whileTap={reduceMotion ? undefined : { scale: 0.96 }}
       animate={active && !reduceMotion ? { scale: 1.01 } : { scale: 1 }}
       transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
     >
-      <span className="provider-card-icon">{icon}</span>
       <div className="provider-card__title">
         <strong>{label}</strong>
         <span className={`settings-choice__chip provider-card__chip${active ? " settings-choice__chip--active provider-card__chip--active" : ""}`}>
-          {active ? "Selected" : "Not selected"}
+          {locked && !active ? "Pro" : active ? "Selected" : "Not selected"}
         </span>
       </div>
       <span>{description}</span>
       {note && <span className="provider-card__note">{note}</span>}
     </motion.button>
+  );
+}
+
+function ProPaywallCard({
+  busy,
+  message,
+  onRefresh,
+  onStartCheckout,
+}: {
+  busy?: boolean;
+  message?: string;
+  onRefresh: () => Promise<EntitlementStatus>;
+  onStartCheckout: () => Promise<void>;
+}) {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <div className="pro-paywall-card">
+      <div>
+        <strong>Unlock Echo Pro</strong>
+        <span>Cloud dictation and unlimited local history with a one-time purchase.</span>
+        {message && <em>{message}</em>}
+      </div>
+      <div className="pro-paywall-card__actions">
+        <Button
+          onClick={() => void onStartCheckout()}
+          variant="outline"
+          disabled={busy}
+        >
+          {busy ? "Opening..." : "Unlock"}
+        </Button>
+        <Button
+          onClick={() => void handleRefresh()}
+          variant="secondary"
+          disabled={refreshing}
+        >
+          {refreshing ? "Checking..." : "Restore"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -458,7 +592,7 @@ function ModelDownloadSection({
               )}
             </>
           ) : status?.downloaded && !status.downloading ? (
-            <Button variant="primary" onClick={() => onSelect(modelSize)} size="sm">
+            <Button variant="outline" onClick={() => onSelect(modelSize)} size="sm">
               Use this model
             </Button>
           ) : (
@@ -511,7 +645,7 @@ function ModelDownloadSection({
             </Button>
           )}
           {status && !status.downloaded && !status.downloading && (
-            <Button variant="primary" onClick={handleDownload} size="sm">
+            <Button variant="secondary" onClick={handleDownload} size="sm">
               {status.integrity_error ? "Retry Download" : "Download Model"}
             </Button>
           )}
@@ -521,46 +655,18 @@ function ModelDownloadSection({
   );
 }
 
-function PermissionCard({
-  granted,
-  children,
-  icon,
-  onAllow,
-  tone = "info",
-}: {
-  granted: boolean;
-  children: React.ReactNode;
-  icon: React.ReactNode;
-  onAllow: () => void;
-  tone?: "info" | "warning";
-}) {
-  return (
-    <div className={`permission-card permission-card--${tone}`}>
-      <span className="permission-card__icon">{icon}</span>
-      <p>{children}</p>
-      {granted ? (
-        <span
-          className="permission-card__status"
-          aria-label="Permission granted"
-          title="Permission granted"
-        >
-          <CheckCircle2 size={18} />
-        </span>
-      ) : (
-        <Button variant="primary" size="sm" onClick={onAllow}>
-          Allow
-        </Button>
-      )}
-    </div>
-  );
-}
-
 export default function Settings({
   authUser,
   config,
+  entitlement,
+  entitlementMessage = "",
+  entitlementChecking = false,
+  checkoutPending = false,
   onSave,
   onCancel,
   onClearInsights,
+  onStartCheckout,
+  onRefreshEntitlement,
   onSignOut,
   onOpenOnboarding,
   onPreviewAppearance,
@@ -582,13 +688,17 @@ export default function Settings({
   const [shortcutCaptureHint, setShortcutCaptureHint] = useState(
     "Click the field, then press your shortcut."
   );
-  const [diagnostics, setDiagnostics] = useState<SupportDiagnostics | null>(null);
-  const [diagnosticsState, setDiagnosticsState] = useState<"idle" | "loading" | "copied" | "error">("idle");
-  const [diagnosticsMessage, setDiagnosticsMessage] = useState("");
+  const [shortcutFocused, setShortcutFocused] = useState(false);
   const [clearInsightsConfirming, setClearInsightsConfirming] = useState(false);
   const [clearInsightsState, setClearInsightsState] = useState<"idle" | "clearing" | "success" | "error">("idle");
   const [clearInsightsMessage, setClearInsightsMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("account");
   const reduceMotion = useReducedMotion() ?? false;
+  const hasPro = entitlement.tier === "pro_lifetime";
+  const checkingEntitlement = entitlementChecking && !hasPro;
+  const canUseCloud = entitlement.features.cloudProvider;
+  const canUseUnlimitedHistory = entitlement.features.unlimitedHistory;
+  const isDirty = JSON.stringify(form) !== JSON.stringify(config);
 
   useEffect(() => {
     setForm({ ...config });
@@ -631,6 +741,7 @@ export default function Settings({
     const nextForm = {
       ...form,
       groq_api_key: form.groq_api_key.trim(),
+      history_limit: canUseUnlimitedHistory ? form.history_limit : Math.min(form.history_limit, 100),
       local_transcription_threads:
         form.local_transcription_threads && form.local_transcription_threads > 0
           ? Math.round(form.local_transcription_threads)
@@ -638,6 +749,10 @@ export default function Settings({
     };
 
     if (nextForm.model_provider === "api") {
+      if (!canUseCloud) {
+        setSaveError("Unlock Echo Pro to save cloud transcription settings.");
+        return;
+      }
       if (!nextForm.groq_api_key) {
         setSaveError("Enter a Groq API key or switch to a local Whisper model.");
         return;
@@ -657,6 +772,14 @@ export default function Settings({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDiscard = () => {
+    setForm({ ...config });
+    setSaveError("");
+    setGroqTest({ message: "", signature: "", status: "idle" });
+    onPreviewAppearance?.(config.appearance_theme);
+    onCancel();
   };
 
   const handleClearInsights = async () => {
@@ -687,6 +810,15 @@ export default function Settings({
   ].join("|");
 
   const handleTestGroqConnection = async () => {
+    if (!canUseCloud) {
+      setGroqTest({
+        message: "Unlock Echo Pro to test cloud transcription.",
+        signature: groqTestSignature,
+        status: "error",
+      });
+      return;
+    }
+
     const nextForm = {
       ...form,
       groq_api_key: form.groq_api_key.trim(),
@@ -763,613 +895,549 @@ export default function Settings({
     setTimeout(() => setMicTestState("idle"), 4000);
   };
 
-  const handleAllowMicrophone = async () => {
-    if (HAS_TAURI) {
-      await invoke("open_setup_help", { target: "microphone" }).catch(console.error);
-    }
-    await onRefreshSetup?.();
-  };
-
-  const handleAllowAccessibility = async () => {
-    if (HAS_TAURI) {
-      await invoke("request_accessibility_permission").catch(console.error);
-    }
-    await onRefreshSetup?.();
-  };
-
-  const handleCopyDiagnostics = async () => {
-    setDiagnosticsState("loading");
-    setDiagnosticsMessage("");
-
-    if (!HAS_TAURI) {
-      const preview = {
-        generatedAt: new Date().toISOString(),
-        appVersion: "0.1.0",
-        platform: "preview",
-        arch: "preview",
-        modelProvider: form.model_provider,
-        setupReady: !!setupStatus?.ready,
-        historyItemCount: 0,
-        notepadNoteCount: 0,
-        statsTotalWords: 0,
-        statsDictationCount: 0,
-        recentErrors: [],
-        privacy: [
-          "Transcript text is excluded.",
-          "Notepad note contents are excluded.",
-          "Audio files and audio samples are excluded.",
-          "Groq API keys and future company cloud credentials are excluded.",
-        ],
-      };
-      setDiagnostics(preview);
-      setDiagnosticsState("copied");
-      setDiagnosticsMessage("Preview diagnostics generated.");
-      return;
-    }
-
-    try {
-      const [report, json] = await Promise.all([
-        invoke<SupportDiagnostics>("get_support_diagnostics"),
-        invoke<string>("get_support_diagnostics_json"),
-      ]);
-      await invoke("copy_transcript", { text: json });
-      setDiagnostics(report);
-      setDiagnosticsState("copied");
-      setDiagnosticsMessage("Safe diagnostics copied to clipboard.");
-    } catch (e) {
-      setDiagnosticsState("error");
-      setDiagnosticsMessage(formatErrorMessage(e));
-    }
-  };
-
-  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (event.key === "Escape") {
-      event.currentTarget.blur();
-      setShortcutCaptureHint("Shortcut unchanged.");
-      return;
-    }
-
-    const accelerator = acceleratorFromKeyboardEvent(event);
-    if (!accelerator) {
-      setShortcutCaptureHint("Press any key or key combo.");
-      return;
-    }
-
+  const handleShortcutCapture = (accelerator: string) => {
     setForm({ ...form, shortcut: accelerator });
     setShortcutCaptureHint(`Captured ${accelerator}. Save to apply it.`);
   };
 
-  const canCancel = config.model_provider === "local" || !!config.groq_api_key;
   const ready = setupStatus?.ready;
-  const microphoneGranted = setupStatus?.checks.some(
-    (check) => check.id === "microphone" && check.status === "ok"
-  ) ?? false;
-  const accessibilityGranted = setupStatus?.checks.some(
-    (check) => check.id === "paste" && check.status === "ok"
-  ) ?? false;
+  const settingsContainerVariants: Variants = reduceMotion
+    ? {
+        hidden: { opacity: 0 },
+        visible: { opacity: 1, transition: { duration: 0 } },
+      }
+    : {
+        hidden: { opacity: 1 },
+        visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
+      };
+  const settingsEntryVariants: Variants = reduceMotion
+    ? {
+        hidden: { opacity: 0 },
+        visible: { opacity: 1, transition: { duration: 0 } },
+      }
+    : {
+        hidden: { opacity: 0, y: 8, filter: "blur(4px)" },
+        visible: {
+          opacity: 1,
+          y: 0,
+          filter: "blur(0px)",
+          transition: { duration: 0.22, ease: SETTINGS_EASE },
+        },
+      };
 
   return (
     <motion.form
       className="settings-pane"
       onSubmit={handleSubmit}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+      initial="hidden"
+      animate="visible"
+      variants={settingsContainerVariants}
     >
-      <div className="page-heading page-heading--split">
+      <motion.div className="page-heading page-heading--split" variants={settingsEntryVariants}>
         <div>
-          <p>Preferences</p>
           <h2>Settings</h2>
-          <span>Provider, shortcut, permissions, history, sounds, and appearance.</span>
         </div>
-        <Chip tone={ready ? "success" : "warning"}>{ready ? "Ready" : "Needs setup"}</Chip>
-      </div>
+      </motion.div>
 
-      <motion.section
-        className="ui-card settings-readiness-card"
-        aria-label="Setup readiness"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-      >
-        <div>
-          <strong>Setup readiness</strong>
-          <span>Groq keys stay in the OS credential store. Keep checks green before release QA.</span>
-        </div>
-        {onRefreshSetup && (
-          <IconButton label="Refresh setup checks" onClick={() => void onRefreshSetup()}>
-            <RefreshCw size={16} />
-          </IconButton>
-        )}
-        {setupStatus?.checks && (
-          <div className="readiness-chips">
-            {setupStatus.checks.map((check) => (
-              <Chip
-                key={check.id}
-                tone={check.status === "ok" ? "success" : check.status === "error" ? "error" : "warning"}
-              >
-                {check.label}
-              </Chip>
-            ))}
-          </div>
-        )}
-        {onOpenOnboarding && (
-          <Button variant="secondary" onClick={onOpenOnboarding}>
-            Run onboarding
-          </Button>
-        )}
-      </motion.section>
+      <SettingsStatusSummary
+        onOpenOnboarding={onOpenOnboarding}
+        onRefreshSetup={onRefreshSetup}
+        ready={ready}
+        setupStatus={setupStatus}
+      />
 
-      <SettingsSection icon={<User size={18} />} title="Account">
-        <div className="account-card">
-          <div>
-            <strong>{authUser?.email ?? "Signed in"}</strong>
-            <span>{authUser ? `${authUser.provider} account` : "Echo account"}</span>
-          </div>
-          <Button icon={<LogOut size={15} />} onClick={() => void onSignOut()} type="button" variant="secondary">
-            Sign Out
-          </Button>
-        </div>
-        <Alert tone="info">
-          Echo v1 keeps transcript history, Notepad notes, and dictation insights local on this
-          device. Signing out does not delete local app data.
-        </Alert>
-      </SettingsSection>
+      <motion.div className="settings-tab-shell" variants={settingsEntryVariants}>
+        <SettingsFadeTabs active={activeTab} onChange={setActiveTab} />
+      </motion.div>
 
-      <SettingsSection icon={<Monitor size={18} />} title="Appearance">
-        <SegmentedControl<AppearanceTheme>
-          label="Appearance"
-          value={form.appearance_theme}
-          onChange={(appearance_theme) => {
-            setForm({ ...form, appearance_theme });
-            onPreviewAppearance?.(appearance_theme);
-          }}
-          options={[
-            { icon: <Moon size={15} />, label: "Dark", value: "dark" },
-            { icon: <Sun size={15} />, label: "Light", value: "light" },
-            { icon: <Monitor size={15} />, label: "System", value: "system" },
-          ]}
-        />
-      </SettingsSection>
-
-      <SettingsSection icon={<Cloud size={18} />} title="Transcription Provider">
-        <div className="settings-grid settings-grid--two">
-          <ProviderCard
-            active={form.model_provider === "api"}
-            icon={<Sparkles size={18} />}
-            label="Cloud"
-            description="Fast online transcription."
-            note="Powered by Groq."
-            onClick={() => setForm({ ...form, model_provider: "api" })}
-          />
-          <ProviderCard
-            active={form.model_provider === "local"}
-            icon={<Cpu size={18} />}
-            label="Local"
-            description="Private on-device transcription."
-            onClick={() => setForm({ ...form, model_provider: "local" })}
-          />
-        </div>
-      </SettingsSection>
-
-      {form.model_provider === "api" && (
-        <>
-          <SettingsSection icon={<Shield size={18} />} title="Cloud API">
-            <Field
-              id="api-key"
-              label="Cloud API Key"
-              type="password"
-              value={form.groq_api_key}
-              onChange={(e) => setForm({ ...form, groq_api_key: e.target.value })}
-              placeholder="gsk_..."
-              required={form.model_provider === "api"}
-              helperText={
-                <>
-                  Get your key at{" "}
-                  <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">
-                    console.groq.com/keys
-                  </a>
-                  . Saved securely in your OS credential store, not in config.json.
-                </>
-              }
-            />
-            <div className="settings-row settings-row--wrap">
-              <Button
-                disabled={groqTest.status === "testing"}
-                icon={<RefreshCw size={15} />}
-                onClick={() => void handleTestGroqConnection()}
-                variant="secondary"
-              >
-                {groqTest.status === "testing" ? "Testing..." : "Test Groq"}
-              </Button>
-              {groqTest.message && groqTest.signature === groqTestSignature && (
-                <Chip
-                  tone={
-                    groqTest.status === "success"
-                      ? "success"
-                      : groqTest.status === "warning"
-                        ? "warning"
-                        : groqTest.status === "testing"
-                          ? "accent"
-                          : "error"
+      <AnimatePresence initial={false} mode="wait">
+        <motion.div
+          animate={{ opacity: 1, y: 0 }}
+          className="settings-tab-panel"
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+          key={activeTab}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: SETTINGS_EASE }}
+        >
+          {activeTab === "account" && (
+            <>
+              <SettingsSection title="Account">
+                <SettingsRow
+                  label={authUser?.email ?? "Signed in"}
+                  description={authUser ? `${authUser.provider} account` : "Echo account"}
+                  action={
+                    <Button onClick={() => void onSignOut()} type="button" variant="secondary">
+                    Sign Out
+                    </Button>
                   }
-                >
-                  {groqTest.status === "testing"
-                    ? "Checking"
-                    : groqTest.status === "success"
-                      ? "Ready"
-                      : "Needs attention"}
-                </Chip>
-              )}
-            </div>
-            <AnimatePresence initial={false}>
-              {groqTest.message && groqTest.signature === groqTestSignature && (
-                <motion.div
-                  key={`${groqTest.status}-${groqTest.message}`}
-                  initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-                >
-                  <Alert
-                    tone={
-                      groqTest.status === "success"
-                        ? "success"
-                        : groqTest.status === "warning"
-                          ? "warning"
-                          : groqTest.status === "testing"
-                            ? "info"
-                            : "error"
+                />
+                {checkingEntitlement ? (
+                  <SettingsRow
+                    label="Plan"
+                    description="Checking your Echo Pro status"
+                    action={<Chip tone="accent">Checking</Chip>}
+                  />
+                ) : hasPro ? (
+                  <SettingsRow
+                    label="Echo Pro"
+                    description="Cloud dictation and unlimited local history are active"
+                    action={<Chip tone="success">Active</Chip>}
+                  />
+                ) : (
+                  <ProPaywallCard
+                    busy={checkoutPending}
+                    message={entitlementMessage}
+                    onRefresh={onRefreshEntitlement}
+                    onStartCheckout={onStartCheckout}
+                  />
+                )}
+                <Disclosure className="settings-inner-disclosure" summary="Local data and privacy">
+                  <p>
+                    Dictation history, Notepad notes, and insights stay on this device. Signing out does not
+                    delete them.
+                  </p>
+                </Disclosure>
+              </SettingsSection>
+            </>
+          )}
+
+          {activeTab === "dictation" && (
+            <>
+              <SettingsSection
+                icon={<Cloud size={18} />}
+                title="Provider"
+              >
+                <div className="settings-grid settings-grid--two">
+                  <ProviderCard
+                    active={form.model_provider === "api"}
+                    ariaLabel="Cloud"
+                    icon={<Cloud size={18} />}
+                    label="Cloud"
+                    description={
+                      canUseCloud
+                        ? "Fast online transcription"
+                        : checkingEntitlement
+                          ? "Checking Echo Pro status"
+                          : "Available with Echo Pro"
+                    }
+                    locked={!canUseCloud}
+                    note={canUseCloud ? "Uses your Groq API key" : undefined}
+                    onClick={() => {
+                      if (canUseCloud) {
+                        setForm({ ...form, model_provider: "api" });
+                      } else {
+                        setActiveTab("account");
+                      }
+                    }}
+                  />
+                  <ProviderCard
+                    active={form.model_provider === "local"}
+                    icon={<Cpu size={18} />}
+                    label="On-device"
+                    description="Private local transcription"
+                    onClick={() => setForm({ ...form, model_provider: "local" })}
+                  />
+                </div>
+                {!canUseCloud && (
+                  <InlineNotice
+                    tone="info"
+                    action={
+                      <Button size="sm" variant="ghost" onClick={() => setActiveTab("account")}>
+                        View plan
+                      </Button>
                     }
                   >
-                    {groqTest.message}
-                  </Alert>
-                </motion.div>
+                    Cloud transcription requires Echo Pro.
+                  </InlineNotice>
+                )}
+              </SettingsSection>
+
+              {form.model_provider === "api" && canUseCloud && (
+                <>
+                  <SettingsSection
+                    icon={<Shield size={18} />}
+                    title="Cloud"
+                  >
+                    <Field
+                      id="api-key"
+                      label="Groq API key"
+                      type="password"
+                      value={form.groq_api_key}
+                      onChange={(e) => setForm({ ...form, groq_api_key: e.target.value })}
+                      placeholder="gsk_..."
+                      required={form.model_provider === "api"}
+                      helperText={
+                        <>
+                          Stored in your operating system’s secure credential store. Get a key at{" "}
+                          <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer">
+                            console.groq.com/keys
+                          </a>
+                          .
+                        </>
+                      }
+                    />
+                    <div className="settings-row settings-row--wrap">
+                      <Button
+                        disabled={groqTest.status === "testing"}
+                        onClick={() => void handleTestGroqConnection()}
+                        variant="secondary"
+                      >
+                        {groqTest.status === "testing" ? "Testing..." : "Test connection"}
+                      </Button>
+                      {groqTest.message && groqTest.signature === groqTestSignature && (
+                        <Chip
+                          tone={
+                            groqTest.status === "success"
+                              ? "success"
+                              : groqTest.status === "warning"
+                                ? "warning"
+                                : groqTest.status === "testing"
+                                  ? "accent"
+                                  : "error"
+                          }
+                        >
+                          {groqTest.status === "testing"
+                            ? "Checking"
+                            : groqTest.status === "success"
+                              ? "Ready"
+                              : "Needs attention"}
+                        </Chip>
+                      )}
+                    </div>
+                    <AnimatePresence initial={false}>
+                      {groqTest.message && groqTest.signature === groqTestSignature && (
+                        <motion.div
+                          key={`${groqTest.status}-${groqTest.message}`}
+                          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                          transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: SETTINGS_EASE }}
+                        >
+                          <Alert
+                            tone={
+                              groqTest.status === "success"
+                                ? "success"
+                                : groqTest.status === "warning"
+                                  ? "warning"
+                                  : groqTest.status === "testing"
+                                    ? "info"
+                                    : "error"
+                            }
+                          >
+                            {groqTest.message}
+                          </Alert>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </SettingsSection>
+
+                  <Disclosure className="settings-advanced" summary="Advanced">
+                    <div className="settings-advanced__content">
+                      <div className="settings-grid settings-grid--two">
+                        <SelectField
+                          id="transcription-model"
+                          label="Transcription model"
+                          value={form.transcription_model}
+                          onChange={(e) => setForm({ ...form, transcription_model: e.target.value })}
+                          options={TRANSCRIPTION_MODELS}
+                        />
+                        <SelectField
+                          id="cleanup-model"
+                          label="Cleanup model"
+                          value={form.cleanup_model}
+                          onChange={(e) => setForm({ ...form, cleanup_model: e.target.value })}
+                          options={CLEANUP_MODELS}
+                        />
+                      </div>
+                      <Toggle
+                        checked={form.cleanup_enabled}
+                        onChange={(cleanup_enabled) => setForm({ ...form, cleanup_enabled })}
+                        label="Clean up wording"
+                      />
+                      <p className="settings-supporting-copy">
+                        If cleanup fails, Echo keeps the original transcript.
+                      </p>
+                    </div>
+                  </Disclosure>
+                </>
               )}
-            </AnimatePresence>
-          </SettingsSection>
 
-          <SettingsSection icon={<Sparkles size={18} />} title="AI Models">
-            <div className="settings-grid settings-grid--two">
-              <SelectField
-                id="transcription-model"
-                label="Transcription Model"
-                value={form.transcription_model}
-                onChange={(e) => setForm({ ...form, transcription_model: e.target.value })}
-                options={TRANSCRIPTION_MODELS}
-              />
-              <SelectField
-                id="cleanup-model"
-                label="Cleanup Model"
-                value={form.cleanup_model}
-                onChange={(e) => setForm({ ...form, cleanup_model: e.target.value })}
-                options={CLEANUP_MODELS}
-              />
-            </div>
-            <Toggle
-              checked={form.cleanup_enabled}
-              onChange={(cleanup_enabled) => setForm({ ...form, cleanup_enabled })}
-              label="Enable AI cleanup"
-            />
-            <Alert tone="info">
-              Cleanup uses your Groq cleanup model after transcription. If cleanup fails, Echo keeps
-              the original transcript instead of blocking dictation.
-            </Alert>
-          </SettingsSection>
-        </>
-      )}
-
-      {form.model_provider === "local" && (
-        <SettingsSection icon={<Cpu size={18} />} title="Local Whisper Models">
-          <Alert tone="info">Run transcription privately on this device.</Alert>
-          {form.local_model_size === "medium" && (
-            <Alert tone="warning">
-              Whisper Medium uses substantially more memory than Small. Echo now keeps the loaded
-              model cached while the app is open, so the first dictation after launch may be slower
-              than the next one.
-            </Alert>
+              {form.model_provider === "local" && (
+                <SettingsSection
+                  icon={<Cpu size={18} />}
+                  title="On-device model"
+                >
+                  <div className="local-model-list">
+                    <ModelDownloadSection
+                      key="small"
+                      modelSize="small"
+                      selected={form.local_model_size === "small"}
+                      onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
+                    />
+                    <ModelDownloadSection
+                      key="medium"
+                      modelSize="medium"
+                      selected={form.local_model_size === "medium"}
+                      onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
+                    />
+                  </div>
+                  {form.local_model_size === "medium" && (
+                    <InlineNotice tone="warning">
+                      Medium uses more memory and may take longer on the first dictation after launch.
+                    </InlineNotice>
+                  )}
+                  <Disclosure className="settings-inner-disclosure" summary="Advanced">
+                    <SelectField
+                      id="local-transcription-threads"
+                      label="Performance"
+                      value={form.local_transcription_threads ? String(form.local_transcription_threads) : ""}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          local_transcription_threads: e.target.value ? Number(e.target.value) : null,
+                        })
+                      }
+                      options={LOCAL_THREAD_OPTIONS}
+                      helperText="Choose how much processing power Echo can use."
+                    />
+                  </Disclosure>
+                </SettingsSection>
+              )}
+            </>
           )}
-          <SelectField
-            id="local-transcription-threads"
-            label="Local CPU Usage"
-            value={form.local_transcription_threads ? String(form.local_transcription_threads) : ""}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                local_transcription_threads: e.target.value ? Number(e.target.value) : null,
-              })
-            }
-            options={LOCAL_THREAD_OPTIONS}
-            helperText="Balanced Auto caps local Whisper to a calmer CPU profile."
-          />
-          <div className="local-model-list">
-            <ModelDownloadSection
-              key="small"
-              modelSize="small"
-              selected={form.local_model_size === "small"}
-              onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
-            />
-            <ModelDownloadSection
-              key="medium"
-              modelSize="medium"
-              selected={form.local_model_size === "medium"}
-              onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
-            />
-          </div>
-        </SettingsSection>
-      )}
 
-      <SettingsSection icon={<Command size={18} />} title="Global Shortcut">
-        <Field
-          id="shortcut"
-          label="Shortcut"
-          value={form.shortcut}
-          readOnly
-          onFocus={() => setShortcutCaptureHint("Press any key or key combo. Escape cancels here.")}
-          onKeyDown={handleShortcutKeyDown}
-          placeholder="Press any key or key combo"
-          helperText={shortcutError || shortcutCaptureHint}
-          error={!!shortcutError}
-        />
-      </SettingsSection>
-
-      <SettingsSection icon={<Mic size={18} />} title="Microphone">
-        <SelectField
-          id="input-device"
-          label="Input Device"
-          value={form.input_device ?? ""}
-          onChange={(e) =>
-            setForm({
-              ...form,
-              input_device: e.target.value || null,
-            })
-          }
-          options={[
-            { label: "System Default", value: "" },
-            ...devices.map((device) => ({ label: device, value: device })),
-          ]}
-        />
-
-        <div className="mic-test">
-          <Button
-            variant="secondary"
-            icon={<Mic size={16} />}
-            onClick={handleTestMic}
-            disabled={micTestState === "testing"}
-          >
-            {micTestState === "testing" ? "Listening..." : "Test Microphone"}
-          </Button>
-
-          <AnimatePresence initial={false} mode="wait">
-            {(micTestState === "testing" || micTestState === "success") && (
-              <motion.div
-                key={micTestState === "testing" ? "mic-test-progress" : "mic-test-level"}
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+          {activeTab === "input" && (
+            <SettingsSection title="Input">
+              <SettingsRow
+                label="Shortcut"
+                description={shortcutError || (shortcutFocused ? shortcutCaptureHint : undefined)}
+                action={
+                  <ShortcutCapture
+                    className="settings-row-control"
+                    displayValue={formatShortcutForDisplay(form.shortcut)}
+                    id="shortcut"
+                    invalid={!!shortcutError}
+                    onBlur={() => {
+                      setShortcutFocused(false);
+                      setShortcutCaptureHint("Click the field, then press your shortcut.");
+                    }}
+                    onCancel={() => setShortcutCaptureHint("Shortcut unchanged.")}
+                    onCapture={handleShortcutCapture}
+                    onFocus={() => {
+                      setShortcutFocused(true);
+                      setShortcutCaptureHint("Press a key combination. Escape cancels.");
+                    }}
+                    onIncomplete={() => setShortcutCaptureHint("Press any key or key combo.")}
+                    platform={/Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "macos" : "windows"}
+                    value={form.shortcut}
+                  />
+                }
+              />
+              <SettingsRow
+                label="Microphone"
+                action={
+                  <select
+                    aria-label="Input device"
+                    className="ui-select settings-row-control"
+                    id="input-device"
+                    value={form.input_device ?? ""}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        input_device: e.target.value || null,
+                      })
+                    }
+                  >
+                    <option value="">System Default</option>
+                    {devices.map((device) => (
+                      <option key={device} value={device}>
+                        {device}
+                      </option>
+                    ))}
+                  </select>
+                }
               >
-                <Progress
-                  value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined}
+                <div className="mic-test">
+                  <Button
+                    variant="secondary"
+                    onClick={handleTestMic}
+                    disabled={micTestState === "testing"}
+                  >
+                    {micTestState === "testing" ? "Listening..." : "Test microphone"}
+                  </Button>
+                  {(micTestState === "testing" || micTestState === "success") && (
+                    <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
+                  )}
+                  {micTestState === "success" && <span className="mic-test__status is-success">Microphone working</span>}
+                  {micTestState === "fail" && <span className="mic-test__status is-error">No audio detected</span>}
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Sounds"
+                action={
+                  <Toggle
+                    checked={form.sounds_enabled}
+                    onChange={(sounds_enabled) => setForm({ ...form, sounds_enabled })}
+                    label={form.sounds_enabled ? "On" : "Off"}
+                  />
+                }
+              >
+                {form.sounds_enabled && (
+                  <div className="settings-grid settings-grid--two settings-sound-grid">
+                    <SoundSelect
+                      id="indicator-sound"
+                      label="Start and stop sound"
+                      value={form.indicator_sound}
+                      onChange={(indicator_sound) => setForm({ ...form, indicator_sound })}
+                    />
+                    <SoundSelect
+                      id="success-sound"
+                      label="Completion sound"
+                      value={form.success_sound}
+                      onChange={(success_sound) => setForm({ ...form, success_sound })}
+                    />
+                  </div>
+                )}
+              </SettingsRow>
+            </SettingsSection>
+          )}
+
+          {activeTab === "app" && (
+            <SettingsSection title="App">
+              <SettingsRow label="Appearance">
+                <SegmentedControl<AppearanceTheme>
+                  label="Appearance"
+                  value={form.appearance_theme}
+                  onChange={(appearance_theme) => {
+                    setForm({ ...form, appearance_theme });
+                    onPreviewAppearance?.(appearance_theme);
+                  }}
+                  options={[
+                    { label: "Dark", value: "dark" },
+                    { label: "Light", value: "light" },
+                    { label: "System", value: "system" },
+                  ]}
                 />
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence initial={false}>
-            {micTestState === "success" && (
-              <motion.div
-                key="mic-test-success"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+              </SettingsRow>
+              <SettingsRow
+                label="Dictation history"
+                description={
+                  form.history_enabled
+                    ? canUseUnlimitedHistory
+                      ? "Stored on this device with no item limit"
+                      : "Stored on this device. Free includes up to 100 items."
+                    : "New dictations will not be saved"
+                }
+                action={
+                  <Toggle
+                    checked={form.history_enabled}
+                    onChange={(history_enabled) => setForm({ ...form, history_enabled })}
+                    label={form.history_enabled ? "On" : "Off"}
+                  />
+                }
               >
-                <Alert tone="success">Microphone working</Alert>
-              </motion.div>
-            )}
-            {micTestState === "fail" && (
-              <motion.div
-                key="mic-test-fail"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-              >
-                <Alert tone="error">No audio detected</Alert>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </SettingsSection>
+                {form.history_enabled && !canUseUnlimitedHistory && (
+                  <Field
+                    className="history-limit-field"
+                    id="history-limit"
+                    label="Keep up to"
+                    type="number"
+                    value={Math.min(form.history_limit, 100)}
+                    min={1}
+                    max={100}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        history_limit: Math.min(Number(e.target.value) || 1, 100),
+                      })
+                    }
+                    helperText="items"
+                  />
+                )}
+              </SettingsRow>
+              <SettingsRow
+                label="Launch at login"
+                action={
+                  <Toggle
+                    checked={form.launch_at_login}
+                    onChange={(launch_at_login) => setForm({ ...form, launch_at_login })}
+                    label={form.launch_at_login ? "On" : "Off"}
+                  />
+                }
+              />
+              {onOpenOnboarding && (
+                <SettingsRow
+                  label="Setup assistant"
+                  description="Review your microphone, paste, and shortcut setup"
+                  action={
+                    <Button type="button" variant="secondary" onClick={onOpenOnboarding}>
+                      Run setup
+                    </Button>
+                  }
+                />
+              )}
+              {onClearInsights && (
+                <Disclosure className="settings-inner-disclosure" summary="Data management">
+                  <div className="settings-danger-row">
+                    <div>
+                      <strong>Dictation insights</strong>
+                      <span>Total words, WPM, streaks, and milestones are stored locally.</span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant={clearInsightsConfirming ? "danger" : "secondary"}
+                      onClick={() => void handleClearInsights()}
+                      disabled={clearInsightsState === "clearing"}
+                    >
+                      {clearInsightsState === "clearing"
+                        ? "Clearing..."
+                        : clearInsightsConfirming
+                          ? "Confirm clear"
+                          : "Clear insights"}
+                    </Button>
+                  </div>
+                  {clearInsightsConfirming && (
+                    <InlineNotice tone="warning">
+                      This resets insights only. History and Notepad notes are kept.
+                    </InlineNotice>
+                  )}
+                  {clearInsightsMessage && (
+                    <InlineNotice tone={clearInsightsState === "error" ? "error" : "success"}>
+                      {clearInsightsMessage}
+                    </InlineNotice>
+                  )}
+                </Disclosure>
+              )}
+            </SettingsSection>
+          )}
+        </motion.div>
+      </AnimatePresence>
 
-      <SettingsSection icon={<Shield size={18} />} title="Permissions">
-        <div className="settings-grid settings-grid--two">
-          <PermissionCard
-            granted={microphoneGranted}
-            icon={<span className="sf-symbol sf-symbol--mic-circle" aria-hidden />}
-            onAllow={() => void handleAllowMicrophone()}
-          >
-            Microphone access is required to record your voice. Use Test Microphone after granting access.
-          </PermissionCard>
-          <PermissionCard
-            granted={accessibilityGranted}
-            icon={<span className="sf-symbol sf-symbol--accessibility" aria-hidden />}
-            onAllow={() => void handleAllowAccessibility()}
-            tone="info"
-          >
-            On macOS, enable Echo in Accessibility for automatic paste. If blocked, Echo copies the transcript.
-          </PermissionCard>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection icon={<History size={18} />} title="History">
-        <Toggle
-          checked={form.history_enabled}
-          onChange={(history_enabled) => setForm({ ...form, history_enabled })}
-          label="Save dictation history"
-        />
-        <Alert tone={form.history_enabled ? "warning" : "info"}>
-          {form.history_enabled
-            ? "New dictations are saved locally on this device."
-            : "New dictations will not be saved. Existing local history stays until you clear it from History."}
-        </Alert>
-        <Field
-          className="history-limit-field"
-          id="history-limit"
-          label="History Limit"
-          type="number"
-          value={form.history_limit}
-          disabled={!form.history_enabled}
-          min={1}
-          max={100}
-          onChange={(e) =>
-            setForm({
-              ...form,
-              history_limit: Number(e.target.value) || 1,
-            })
-          }
-          helperText="Echo keeps at most 100 local history items."
-        />
-        {onClearInsights && (
-          <div className="settings-danger-row">
-            <div>
-              <strong>Dictation insights</strong>
-              <span>Total words, WPM, streaks, and milestones are stored locally.</span>
-            </div>
-            <Button
-              type="button"
-              variant={clearInsightsConfirming ? "danger" : "secondary"}
-              onClick={() => void handleClearInsights()}
-              disabled={clearInsightsState === "clearing"}
-            >
-              {clearInsightsState === "clearing"
-                ? "Clearing..."
-                : clearInsightsConfirming
-                  ? "Confirm Clear"
-                  : "Clear Insights"}
-            </Button>
-          </div>
-        )}
-        {clearInsightsConfirming && (
-          <Alert tone="warning">
-            This resets only dictation insights. Transcript history and Notepad notes stay on this device.
-          </Alert>
-        )}
-        {clearInsightsMessage && (
-          <Alert tone={clearInsightsState === "error" ? "error" : "success"}>
-            {clearInsightsMessage}
-          </Alert>
-        )}
-      </SettingsSection>
-
-      <SettingsSection icon={<FileText size={18} />} title="Support Diagnostics">
-        <Alert tone="info">
-          Diagnostics include app, platform, setup, model, history count, note count, aggregate
-          stats, and safe error metadata only. They never include transcripts, note contents, audio,
-          clipboard contents, Groq API keys, or future Pettal cloud credentials.
-        </Alert>
-        <div className="diagnostics-card">
-          <div>
-            <strong>Privacy-safe support report</strong>
-            <span>
-              {diagnostics
-                ? `${diagnostics.platform}/${diagnostics.arch} · ${diagnostics.modelProvider} · ${diagnostics.recentErrors.length} safe errors`
-                : "Generate this when support needs environment details."}
-            </span>
-          </div>
-          <Button
-            disabled={diagnosticsState === "loading"}
-            icon={<Copy size={15} />}
-            onClick={() => void handleCopyDiagnostics()}
-            variant="secondary"
-          >
-            {diagnosticsState === "loading" ? "Preparing..." : "Copy Diagnostics"}
+      {isDirty && (
+        <div className="settings-actions">
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+          <Button type="button" variant="secondary" onClick={handleDiscard}>
+            Discard
           </Button>
         </div>
-        {diagnostics && (
-          <div className="diagnostics-summary">
-            <span>Version {diagnostics.appVersion}</span>
-            <span>{diagnostics.setupReady ? "Setup ready" : "Setup needs attention"}</span>
-            <span>{diagnostics.historyItemCount} history items</span>
-            <span>{diagnostics.notepadNoteCount} notes</span>
-            <span>{diagnostics.statsDictationCount} dictations</span>
-          </div>
-        )}
-        {diagnosticsMessage && (
-          <Alert tone={diagnosticsState === "error" ? "error" : "success"}>
-            {diagnosticsMessage}
-          </Alert>
-        )}
-      </SettingsSection>
-
-      <SettingsSection icon={<Volume2 size={18} />} title="Sounds">
-        <Toggle
-          checked={form.sounds_enabled}
-          onChange={(sounds_enabled) => setForm({ ...form, sounds_enabled })}
-          label="Enable sounds"
-        />
-
-        <div className="settings-grid settings-grid--two">
-          <SoundSelect
-            disabled={!form.sounds_enabled}
-            id="indicator-sound"
-            label="Recording Indicator Sound"
-            value={form.indicator_sound}
-            helperText="Played when recording starts and stops"
-            onChange={(indicator_sound) => setForm({ ...form, indicator_sound })}
-          />
-          <SoundSelect
-            disabled={!form.sounds_enabled}
-            id="success-sound"
-            label="Success Sound"
-            value={form.success_sound}
-            helperText="Played after transcription completes"
-            onChange={(success_sound) => setForm({ ...form, success_sound })}
-          />
-        </div>
-      </SettingsSection>
-
-      <SettingsSection icon={<Power size={18} />} title="Startup">
-        <Toggle
-          checked={form.launch_at_login}
-          onChange={(launch_at_login) => setForm({ ...form, launch_at_login })}
-          label="Launch Echo at login"
-        />
-        <Alert tone="info">
-          When enabled, Echo registers with the operating system and starts automatically after you
-          sign in. You can turn this off here at any time.
-        </Alert>
-      </SettingsSection>
-
-      <div className="settings-actions">
-        <Button type="submit" variant="primary" icon={<Save size={16} />} disabled={saving}>
-          {saving ? "Saving..." : "Save"}
-        </Button>
-        {canCancel && (
-          <Button type="button" variant="secondary" icon={<X size={16} />} onClick={onCancel}>
-            Cancel
-          </Button>
-        )}
-      </div>
+      )}
       {saveError && <Alert tone="error">{saveError}</Alert>}
     </motion.form>
   );
 }
 
 function SoundSelect({
-  disabled,
+  disabled = false,
   helperText,
   id,
   label,
   onChange,
   value,
 }: {
-  disabled: boolean;
-  helperText: string;
+  disabled?: boolean;
+  helperText?: string;
   id: string;
   label: string;
   onChange: (value: string) => void;

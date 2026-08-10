@@ -3,8 +3,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DEFAULT_MAX_HISTORY_ITEMS: usize = 100;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryItem {
     pub id: String,
@@ -69,7 +67,7 @@ fn save_all(items: &[HistoryItem]) -> Result<(), String> {
     fs::write(path, json).map_err(|e| format!("Write error: {e}"))
 }
 
-pub fn add(text: &str, paste_result: &str, limit: usize) -> Result<HistoryItem, String> {
+pub fn add(text: &str, paste_result: &str, limit: Option<usize>) -> Result<HistoryItem, String> {
     let item = HistoryItem {
         id: generate_id(),
         text: text.to_string(),
@@ -78,7 +76,9 @@ pub fn add(text: &str, paste_result: &str, limit: usize) -> Result<HistoryItem, 
     };
     let mut items = load_all();
     items.insert(0, item.clone());
-    items.truncate(limit.clamp(1, DEFAULT_MAX_HISTORY_ITEMS));
+    if let Some(limit) = limit {
+        items.truncate(limit.max(1));
+    }
     save_all(&items)?;
     Ok(item)
 }

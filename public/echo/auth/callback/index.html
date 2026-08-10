@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Echo Login Complete</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0f1727;
+        --panel: #ffffff;
+        --text: #171b2c;
+        --muted: #59637b;
+        --accent: #a91578;
+        --accent-purple: #674ad6;
+        --brand-coral: #ff7a72;
+        --accent-gradient: linear-gradient(135deg, #674ad6 0%, #a91578 100%);
+        --border: rgba(23, 27, 44, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(200, 29, 142, 0.22), transparent 30%),
+          radial-gradient(circle at 80% 10%, rgba(124, 92, 255, 0.2), transparent 30%),
+          radial-gradient(circle at 82% 84%, rgba(255, 122, 114, 0.12), transparent 28%),
+          linear-gradient(145deg, #17233a, var(--bg));
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(100%, 460px);
+        padding: 36px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: color-mix(in srgb, var(--panel) 94%, transparent);
+        box-shadow: 0 22px 70px rgba(0, 0, 0, 0.32);
+        text-align: center;
+      }
+
+      .mark {
+        width: 54px;
+        height: 54px;
+        margin: 0 auto 22px;
+        display: grid;
+        place-items: center;
+        border-radius: 16px;
+        background: rgba(124, 92, 255, 0.1);
+        box-shadow: 0 0 0 1px rgba(124, 92, 255, 0.18);
+      }
+
+      .mark img {
+        width: 100%;
+        height: 100%;
+        display: block;
+        padding: 7px;
+        object-fit: contain;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 14px 0 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.55;
+      }
+
+      .actions {
+        margin-top: 26px;
+        display: grid;
+        gap: 12px;
+      }
+
+      a,
+      button {
+        min-height: 46px;
+        border: 0;
+        border-radius: 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        background: var(--accent-gradient);
+        color: #fff;
+        font: inherit;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      small {
+        display: block;
+        margin-top: 20px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        main {
+          --panel: #19243a;
+          --text: #f7f8ff;
+          --muted: #b8c1d6;
+          --border: rgba(255, 255, 255, 0.12);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">
+        <img src="./echoNewLogoMark.png" alt="" />
+      </div>
+      <h1 id="title">Login successful</h1>
+      <p id="message">Returning you to Echo now.</p>
+      <div class="actions">
+        <a id="open-echo" href="echo://auth/callback">Open Echo</a>
+      </div>
+      <small id="close-note">This tab will try to close in a few seconds. If it stays open, you can close it manually.</small>
+    </main>
+
+    <script>
+      (function () {
+        var echoCallback = new URL("echo://auth/callback");
+        var current = new URL(window.location.href);
+        var params = new URLSearchParams(current.search);
+
+        if (current.hash) {
+          var hashParams = new URLSearchParams(current.hash.replace(/^#/, ""));
+          hashParams.forEach(function (value, key) {
+            if (!params.has(key)) params.set(key, value);
+          });
+        }
+
+        var hasAuthPayload = params.has("code") || params.has("error") || params.has("error_description");
+        var title = document.getElementById("title");
+        var message = document.getElementById("message");
+        var openEcho = document.getElementById("open-echo");
+        var closeNote = document.getElementById("close-note");
+
+        if (!hasAuthPayload) {
+          title.textContent = "Echo login link is incomplete";
+          message.textContent = "Return to Echo and start Google sign-in again.";
+          closeNote.textContent = "No sign-in code was found on this page.";
+          return;
+        }
+
+        echoCallback.search = params.toString();
+        openEcho.href = echoCallback.toString();
+
+        window.location.href = echoCallback.toString();
+
+        window.setTimeout(function () {
+          window.close();
+        }, 5000);
+      })();
+    </script>
+  </body>
+</html>

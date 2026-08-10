@@ -66,6 +66,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "entitlements": "Entitlements.plist"
+    },
     "publisher": "Pettal Technology",
     "copyright": "Copyright (c) 2026 Pettal Technology. All rights reserved.",
     "licenseFile": "../LICENSE-NOTES.md",

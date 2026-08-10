@@ -1,2 +1,14 @@
 [functions.create-model-download-url]
 verify_jwt = true
+
+[functions.create-checkout-session]
+verify_jwt = true
+
+[functions.get-entitlement]
+verify_jwt = true
+
+[functions.confirm-checkout-session]
+verify_jwt = true
+
+[functions.stripe-webhook]
+verify_jwt = false

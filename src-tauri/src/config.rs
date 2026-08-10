@@ -58,6 +58,13 @@ impl ConfigSaveError {
             message: format!("Settings were not saved: {message}"),
         }
     }
+
+    pub fn paywall_required(message: impl Into<String>) -> Self {
+        Self {
+            code: "paywall_required".to_string(),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

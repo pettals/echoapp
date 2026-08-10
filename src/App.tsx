@@ -7,45 +7,45 @@ import {
   useState,
   type MouseEvent,
   type PointerEvent,
+  type ReactNode,
 } from "react";
 import {
   AlertCircle,
   ArrowRight,
   AudioWaveform,
+  Check,
   CheckCircle2,
   CircleDot,
   Copy,
+  Eye,
+  EyeOff,
   FileText,
-  Flame,
-  Gauge,
   History,
+  Home,
   Info,
-  KeyRound,
   Keyboard,
-  LogIn,
   Mail,
   Mic,
   PartyPopper,
   Plus,
-  RefreshCw,
   Search,
   Settings as SettingsIcon,
-  Sparkles,
   Square,
-  Target,
   Trash2,
-  Trophy,
   X,
-} from "lucide-react";
+} from "./components/AureoleIcons";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type Event as TauriEvent } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   exchangeCodeForSession,
+  getFreshSession,
   getSession,
   onAuthStateChange,
+  restorePersistedSession,
   sendPasswordReset,
   signInWithGoogle,
   signInWithPassword,
@@ -54,11 +54,33 @@ import {
   summarizeSession,
   updatePassword,
   type AuthUserSummary,
+  type SignUpProfile,
 } from "./auth";
+import {
+  FREE_ENTITLEMENT,
+  NO_PRO_PURCHASE_MESSAGE,
+  ONLINE_PRO_REQUIRED_MESSAGE,
+  clearActiveEntitlementUser,
+  confirmCheckoutSession,
+  createCheckoutSession,
+  loadCachedEntitlement,
+  refreshEntitlementFromServer,
+  type EntitlementStatus,
+} from "./entitlements";
 import AudioHudIndicator, { type AudioHudIndicatorState } from "./components/AudioHudIndicator";
 import AnimatedOrb from "./components/AnimatedOrb";
-import { Alert, Button, Card, Chip, IconButton, Progress } from "./components/ui";
-import echoLogoMark from "./assets/echoNewLogoMark.png";
+import ShortcutCapture from "./components/ShortcutCapture";
+import {
+  Alert,
+  AnimatedIconSwap,
+  Button,
+  Chip,
+  Disclosure,
+  IconButton,
+  InlineNotice,
+  Progress,
+} from "./components/ui";
+import echoLogoMark from "./assets/app-tray-icon.png";
 import "./App.css";
 
 const Settings = lazy(() => import("./components/Settings"));
@@ -165,9 +187,7 @@ function SettingsFallback() {
     <div className="settings-pane">
       <div className="page-heading page-heading--split">
         <div>
-          <p>Preferences</p>
           <h2>Settings</h2>
-          <span>Loading settings...</span>
         </div>
       </div>
       <div className="ui-card lazy-panel-fallback" role="status">
@@ -205,6 +225,16 @@ interface SetupCheck {
 interface SetupStatus {
   ready: boolean;
   checks: SetupCheck[];
+}
+
+interface ModelStatus {
+  downloaded: boolean;
+  downloading: boolean;
+  file_size_bytes: number;
+  expected_size_bytes: number;
+  integrity_checked: boolean;
+  integrity_error: string | null;
+  model_size: string;
 }
 
 interface ShortcutValidation {
@@ -271,7 +301,6 @@ const INDICATOR_COPY_REVIEW_SIZE = { width: 420, height: 92 };
 const INDICATOR_ERROR_SIZE = { width: 240, height: 72 };
 const COPY_REVIEW_DURATION_MS = 5000;
 const PANEL_TRANSITION = { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] as const };
-const MODIFIER_KEYS = new Set(["Meta", "Control", "Shift", "Alt"]);
 
 const MOCK_CONFIG: AppConfig = {
   groq_api_key: "gsk_mock_preview_key",
@@ -300,14 +329,14 @@ const MOCK_SETUP_STATUS: SetupStatus = {
       id: "provider",
       label: "Provider",
       status: "ok",
-      message: "Groq API key is configured for preview.",
+      message: "Groq API key is ready.",
       action_label: null,
     },
     {
       id: "microphone",
       label: "Microphone",
       status: "warning",
-      message: "Test your microphone before release QA.",
+      message: "Test your microphone in Input settings.",
       action_label: "Open Settings",
     },
     {
@@ -389,28 +418,6 @@ function detectDesktopPlatform(): DesktopPlatform {
 
   if (platform.includes("win")) return "windows";
   return "macos";
-}
-
-function normalizeShortcutKey(key: string): string {
-  if (key === " ") return "Space";
-  if (key.startsWith("Arrow")) return key.replace("Arrow", "");
-  if (key === "Esc") return "Escape";
-  if (key.length === 1) return key.toUpperCase();
-  return key;
-}
-
-function acceleratorFromKeyboardEvent(event: React.KeyboardEvent<HTMLInputElement>): string | null {
-  if (MODIFIER_KEYS.has(event.key)) return null;
-
-  const parts: string[] = [];
-  if (event.metaKey || event.ctrlKey) parts.push("CommandOrControl");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.altKey) parts.push("Alt");
-
-  const key = normalizeShortcutKey(event.key);
-  if (!parts.includes(key)) parts.push(key);
-
-  return parts.join("+");
 }
 
 function formatShortcutForPlatform(shortcut: string, platform: DesktopPlatform): string {
@@ -833,10 +840,23 @@ function DockIndicator() {
       resizeIndicator();
     }
 
+    const refreshIndicatorPlacement = async () => {
+      try {
+        if (cancelled) return;
+        await invoke("reposition_indicator", {
+          width: targetSize.width,
+          height: targetSize.height,
+          force: false,
+        });
+      } catch {
+        /* preview or hidden window */
+      }
+    };
+
     let dockPoll: ReturnType<typeof setInterval> | null = null;
-    if (mode !== "idle") {
+    if (platform === "macos") {
       dockPoll = setInterval(() => {
-        void resizeIndicator();
+        void refreshIndicatorPlacement();
       }, 500);
     }
 
@@ -849,7 +869,7 @@ function DockIndicator() {
         clearTimeout(collapseTimer);
       }
     };
-  }, [mode, expanded, liveTranscript]);
+  }, [mode, expanded, liveTranscript, platform]);
 
   useEffect(() => {
     if (!HAS_TAURI || !IS_PRIMARY_INDICATOR_WINDOW) return;
@@ -1194,6 +1214,10 @@ function MainApp() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [authUser, setAuthUser] = useState<AuthUserSummary | null>(null);
   const [authMessage, setAuthMessage] = useState("");
+  const [entitlement, setEntitlement] = useState<EntitlementStatus>(FREE_ENTITLEMENT);
+  const [entitlementMessage, setEntitlementMessage] = useState("");
+  const [entitlementChecking, setEntitlementChecking] = useState(false);
+  const [checkoutPending, setCheckoutPending] = useState(false);
   const [shortcutError, setShortcutError] = useState("");
   const [lastPerformance, setLastPerformance] = useState<DictationPerformancePayload[]>([]);
   const [appearancePreview, setAppearancePreview] = useState<AppearanceTheme | null>(null);
@@ -1215,9 +1239,14 @@ function MainApp() {
   const deliveredSessionIdsRef = useRef<Set<number>>(new Set());
   const activeDeliveryAudioPathRef = useRef<string | null>(null);
   const consumedAudioPathsRef = useRef<Set<string>>(new Set());
+  const offlineFallbackNoticeRef = useRef("");
   const notepadFocusedRef = useRef(false);
   const dictationTargetRef = useRef<DictationTarget>("external");
   const passwordRecoveryRef = useRef(false);
+  const authSessionRef = useRef<Awaited<ReturnType<typeof getSession>>>(null);
+  const authCallbackInFlightRef = useRef<Set<string>>(new Set());
+  const completedAuthCallbackRef = useRef<Set<string>>(new Set());
+  const googleSignInAttemptRef = useRef(0);
   const milestoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onboardingCompletionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDictationResultRef = useRef<string | null>(null);
@@ -1330,6 +1359,7 @@ function MainApp() {
   }, []);
 
   const applyAuthSession = useCallback((session: Awaited<ReturnType<typeof getSession>>) => {
+    authSessionRef.current = session;
     const summary = summarizeSession(session);
     setAuthUser(summary);
     if (passwordRecoveryRef.current && session) {
@@ -1337,6 +1367,118 @@ function MainApp() {
       return;
     }
     setAuthStatus(summary ? "signedIn" : "signedOut");
+  }, []);
+
+  const routeAfterAuth = useCallback(async () => {
+    const cfg = await loadConfig();
+    if (!cfg || !cfg.onboarding_completed) {
+      setActiveTab("onboarding");
+      return;
+    }
+    if (cfg.model_provider === "api" && !cfg.groq_api_key) {
+      setActiveTab("settings");
+      return;
+    }
+    setActiveTab("dictate");
+  }, [loadConfig]);
+
+  const refreshEntitlement = useCallback(async (
+    userId?: string | null,
+    sessionOverride?: Awaited<ReturnType<typeof getSession>>,
+    options?: { showFreeMessage?: boolean }
+  ) => {
+    const effectiveUserId = userId ?? authUser?.id;
+    if (!effectiveUserId) {
+      setEntitlementChecking(false);
+      setEntitlement(FREE_ENTITLEMENT);
+      setEntitlementMessage("");
+      await clearActiveEntitlementUser().catch(() => {});
+      return FREE_ENTITLEMENT;
+    }
+
+    setEntitlementChecking(true);
+    let cached = FREE_ENTITLEMENT;
+    try {
+      cached = await loadCachedEntitlement(effectiveUserId);
+      setEntitlement(cached);
+    } catch (e) {
+      console.warn("Could not load cached entitlement:", e);
+    }
+
+    try {
+      const serverEntitlement = await refreshEntitlementFromServer(effectiveUserId, sessionOverride);
+      setEntitlement(serverEntitlement);
+      setEntitlementMessage(
+        serverEntitlement.tier === "pro_lifetime"
+          ? "Echo Pro is active."
+          : options?.showFreeMessage
+            ? NO_PRO_PURCHASE_MESSAGE
+            : ""
+      );
+      return serverEntitlement;
+    } catch (e) {
+      console.warn("Could not refresh entitlement:", e);
+      await clearActiveEntitlementUser().catch(() => {});
+      const offlineEntitlement = {
+        ...FREE_ENTITLEMENT,
+        source: cached.source === "free" ? "offline" : "offline_stale",
+      };
+      setEntitlement(offlineEntitlement);
+      setEntitlementMessage(formatErrorMessage(e));
+      return offlineEntitlement;
+    } finally {
+      setEntitlementChecking(false);
+    }
+  }, [authUser?.id]);
+
+  const ensureFreshCloudEntitlement = useCallback(async () => {
+    if (!authUser?.id) return FREE_ENTITLEMENT;
+    return refreshEntitlement(authUser.id);
+  }, [authUser?.id, refreshEntitlement]);
+
+  const handleRefreshEntitlement = useCallback(async () => {
+    setEntitlementMessage("");
+    setActiveTab("settings");
+
+    const session = await getFreshSession(authSessionRef.current).catch(() => null);
+    if (!session?.user?.id) {
+      setEntitlementChecking(false);
+      setEntitlement(FREE_ENTITLEMENT);
+      await clearActiveEntitlementUser().catch(() => {});
+      setEntitlementMessage("Your session expired. Sign out and sign in again to restore Echo Pro.");
+      return FREE_ENTITLEMENT;
+    }
+
+    if (authUser?.id !== session.user.id) {
+      applyAuthSession(session);
+    }
+
+    return refreshEntitlement(session.user.id, session, { showFreeMessage: true });
+  }, [applyAuthSession, authUser?.id, refreshEntitlement]);
+
+  const completeAuthSession = useCallback(async (
+    session: Awaited<ReturnType<typeof getSession>>,
+    options?: { route?: boolean }
+  ) => {
+    applyAuthSession(session);
+    if (session?.user?.id) {
+      void refreshEntitlement(session.user.id, session);
+    }
+    if (options?.route !== false) {
+      await routeAfterAuth();
+    }
+  }, [applyAuthSession, refreshEntitlement, routeAfterAuth]);
+
+  const localFallbackAvailable = useCallback(async (cfg: AppConfig) => {
+    if (!HAS_TAURI) return true;
+    try {
+      const status = await invoke<ModelStatus>("check_model_status", {
+        modelSize: cfg.local_model_size,
+      });
+      return status.downloaded && !status.integrity_error;
+    } catch {
+      return false;
+    }
   }, []);
 
   const handleAuthDeepLink = useCallback(
@@ -1348,7 +1490,49 @@ function MainApp() {
         return;
       }
 
-      if (parsed.protocol !== "echo:" || parsed.hostname !== "auth") return;
+      if (parsed.protocol !== "echo:") return;
+
+      if (parsed.hostname === "billing") {
+        setCheckoutPending(false);
+        setActiveTab("settings");
+
+        if (parsed.pathname === "/cancel") {
+          setEntitlementMessage("Checkout was cancelled. Echo Pro is still locked.");
+          return;
+        }
+
+        if (parsed.pathname !== "/complete") return;
+
+        setEntitlementMessage("Payment complete. Verifying Echo Pro status.");
+        const session = await getFreshSession(authSessionRef.current).catch(() => null);
+        if (!session?.user?.id) {
+          setEntitlementMessage("Payment complete. Sign in again to restore Echo Pro.");
+          return;
+        }
+        if (authUser?.id !== session.user.id) {
+          applyAuthSession(session);
+        }
+
+        try {
+          const checkoutSessionId = parsed.searchParams.get("session_id");
+          if (checkoutSessionId) {
+            await confirmCheckoutSession(checkoutSessionId, session);
+          }
+          const nextEntitlement = await refreshEntitlement(session.user.id, session);
+          setEntitlementMessage(
+            nextEntitlement.tier === "pro_lifetime"
+              ? "Echo Pro is active."
+              : "Payment complete. Echo is still waiting for Stripe to confirm Pro."
+          );
+        } catch (e) {
+          setEntitlementMessage(
+            `Payment complete. Echo could not verify Pro yet: ${formatErrorMessage(e)}`
+          );
+        }
+        return;
+      }
+
+      if (parsed.hostname !== "auth") return;
       const isCallback = parsed.pathname === "/callback";
       const isResetPassword = parsed.pathname === "/reset-password";
       if (!isCallback && !isResetPassword) return;
@@ -1369,24 +1553,47 @@ function MainApp() {
         return;
       }
 
+      const callbackKey = `${parsed.pathname}:${code}`;
+      if (authCallbackInFlightRef.current.has(callbackKey) || completedAuthCallbackRef.current.has(callbackKey)) {
+        return;
+      }
+
+      authCallbackInFlightRef.current.add(callbackKey);
+      googleSignInAttemptRef.current += 1;
       setAuthStatus("loading");
       setAuthMessage("");
       passwordRecoveryRef.current = isResetPassword;
       try {
         const session = await exchangeCodeForSession(code);
-        applyAuthSession(session);
+        completedAuthCallbackRef.current.add(callbackKey);
         if (isResetPassword) {
+          applyAuthSession(session);
           setAuthStatus("passwordRecovery");
         } else {
-          setActiveTab("onboarding");
+          await completeAuthSession(session);
         }
       } catch (e) {
+        const existingSession = await getSession().catch(() => null);
+        if (existingSession) {
+          completedAuthCallbackRef.current.add(callbackKey);
+          setAuthMessage("");
+          if (isResetPassword) {
+            applyAuthSession(existingSession);
+            setAuthStatus("passwordRecovery");
+          } else {
+            await completeAuthSession(existingSession);
+          }
+          return;
+        }
+
         passwordRecoveryRef.current = false;
         setAuthStatus("error");
         setAuthMessage(formatErrorMessage(e));
+      } finally {
+        authCallbackInFlightRef.current.delete(callbackKey);
       }
     },
-    [applyAuthSession]
+    [applyAuthSession, authUser?.id, completeAuthSession, refreshEntitlement]
   );
 
   const loadStats = useCallback(async () => {
@@ -1452,9 +1659,22 @@ function MainApp() {
         if (recording) return false;
 
         const cfg = await invoke<AppConfig>("get_config");
-        if (cfg.model_provider === "api" && !cfg.groq_api_key) {
-          setActiveTab("settings");
-          return false;
+        if (cfg.model_provider === "api") {
+          const freshEntitlement = await ensureFreshCloudEntitlement();
+          if (!freshEntitlement.features.cloudProvider) {
+            if (await localFallbackAvailable(cfg)) {
+              setErrorMsg(ONLINE_PRO_REQUIRED_MESSAGE);
+            } else {
+              setErrorMsg(
+                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline."
+              );
+              setActiveTab("settings");
+              return false;
+            }
+          } else if (!cfg.groq_api_key) {
+            setActiveTab("settings");
+            return false;
+          }
         }
 
         const target: DictationTarget =
@@ -1489,7 +1709,7 @@ function MainApp() {
         startInFlightRef.current = false;
       }
     },
-    [resetDictationTarget, setIndicatorMode]
+    [ensureFreshCloudEntitlement, localFallbackAvailable, resetDictationTarget, setIndicatorMode]
   );
 
   const processRecordedAudio = useCallback(async (
@@ -1555,8 +1775,10 @@ function MainApp() {
             })();
       const result = pasteResult.status;
       lastDictationResultRef.current = result;
+      const fallbackNotice = offlineFallbackNoticeRef.current;
+      offlineFallbackNoticeRef.current = "";
       const pasteWarning = pasteResult.warning ? formatErrorMessage(pasteResult.warning) : "";
-      setErrorMsg(pasteWarning);
+      setErrorMsg(pasteWarning || fallbackNotice);
 
       if (result === "pasted") {
         setAppState("success");
@@ -1959,32 +2181,43 @@ function MainApp() {
 
   useEffect(() => {
     let cancelled = false;
-    getSession()
+    restorePersistedSession()
       .then((session) => {
-        if (!cancelled) applyAuthSession(session);
+        if (cancelled) return;
+        if (session?.access_token) {
+          void completeAuthSession(session);
+        } else {
+          applyAuthSession(session);
+        }
       })
       .catch((e) => {
         if (!cancelled) {
           setAuthStatus("error");
-          setAuthMessage(formatErrorMessage(e));
+          setAuthMessage(`Echo could not restore your account session. ${formatErrorMessage(e)}`);
         }
       });
 
     const subscription = onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") {
         passwordRecoveryRef.current = true;
+        authSessionRef.current = session;
         setAuthUser(summarizeSession(session));
         setAuthStatus("passwordRecovery");
         return;
       }
       if (event === "SIGNED_OUT") {
         passwordRecoveryRef.current = false;
+        authSessionRef.current = null;
         setAuthUser(null);
         setAuthStatus("signedOut");
+        setEntitlementChecking(false);
+        setEntitlement(FREE_ENTITLEMENT);
+        setEntitlementMessage("");
+        clearActiveEntitlementUser().catch(() => {});
         return;
       }
       if (session) {
-        applyAuthSession(session);
+        void completeAuthSession(session, { route: false });
       }
     });
 
@@ -1992,7 +2225,28 @@ function MainApp() {
       cancelled = true;
       subscription.unsubscribe();
     };
-  }, [applyAuthSession]);
+  }, []);
+
+  useEffect(() => {
+    if (authStatus === "signedIn" && authUser?.id) {
+      void refreshEntitlement(authUser.id);
+      return;
+    }
+    setEntitlement(FREE_ENTITLEMENT);
+    setEntitlementMessage("");
+    setEntitlementChecking(false);
+    clearActiveEntitlementUser().catch(() => {});
+  }, [authStatus, authUser?.id, refreshEntitlement]);
+
+  useEffect(() => {
+    if (authStatus !== "signedIn" || !authUser?.id || config?.model_provider !== "api") return;
+
+    const interval = window.setInterval(() => {
+      void refreshEntitlement(authUser.id);
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, [authStatus, authUser?.id, config?.model_provider, refreshEntitlement]);
 
   useEffect(() => {
     if (!HAS_TAURI) return;
@@ -2110,6 +2364,14 @@ function MainApp() {
           return [...prev.filter((item) => item.phase !== event.payload.phase), event.payload];
         });
       }),
+
+      listenSafely<string>("entitlement-offline-fallback", (event) => {
+        offlineFallbackNoticeRef.current = event.payload || ONLINE_PRO_REQUIRED_MESSAGE;
+        setEntitlementChecking(false);
+        setEntitlement(FREE_ENTITLEMENT);
+        setEntitlementMessage(event.payload || ONLINE_PRO_REQUIRED_MESSAGE);
+        setErrorMsg(event.payload || ONLINE_PRO_REQUIRED_MESSAGE);
+      }),
     ];
 
     return () => {
@@ -2189,34 +2451,81 @@ function MainApp() {
     await loadStats();
   };
 
+  const handleStartCheckout = async () => {
+    setEntitlementMessage("");
+    let confirmedSession: Awaited<ReturnType<typeof getSession>>;
+    try {
+      confirmedSession = await getFreshSession(authSessionRef.current);
+    } catch (e) {
+      setActiveTab("settings");
+      setEntitlementMessage(
+        `Your session could not be refreshed. Sign out and sign in again to unlock Echo Pro. ${formatErrorMessage(e)}`
+      );
+      return;
+    }
+
+    if (!confirmedSession?.user?.id) {
+      setActiveTab("settings");
+      setEntitlementMessage("Your session expired. Sign out and sign in again to unlock Echo Pro.");
+      return;
+    }
+
+    if (authUser?.id !== confirmedSession.user.id) {
+      applyAuthSession(confirmedSession);
+    }
+
+    const checkoutUserId = confirmedSession.user.id;
+    setCheckoutPending(true);
+    try {
+      const session = await createCheckoutSession(confirmedSession);
+      if (HAS_TAURI) {
+        await openUrl(session.url);
+      } else {
+        window.open(session.url, "_blank", "noopener,noreferrer");
+      }
+      setEntitlementMessage("Checkout opened in your browser. Echo will refresh Pro status here.");
+
+      const startedAt = Date.now();
+      const poll = window.setInterval(() => {
+        void refreshEntitlement(checkoutUserId, confirmedSession)
+          .then((next) => {
+            if (next.tier === "pro_lifetime" || Date.now() - startedAt > 90_000) {
+              window.clearInterval(poll);
+              setCheckoutPending(false);
+            }
+          })
+          .catch((e) => {
+            console.warn("Could not refresh entitlement during checkout:", e);
+          });
+      }, 3_000);
+    } catch (e) {
+      setCheckoutPending(false);
+      setEntitlementMessage(formatErrorMessage(e));
+    }
+  };
+
   const handleSaveSettings = async (newConfig: AppConfig) => {
     await saveConfig(newConfig);
     setActiveTab("dictate");
   };
 
   const handleSignInWithGoogle = async () => {
+    const attempt = googleSignInAttemptRef.current + 1;
+    googleSignInAttemptRef.current = attempt;
     setAuthStatus("loading");
     setAuthMessage("Opening your browser to finish Google sign-in.");
     try {
       await signInWithGoogle();
-      setAuthStatus("signedOut");
-      setAuthMessage("Finish sign-in in your browser. Echo will continue when you return.");
+      if (googleSignInAttemptRef.current === attempt) {
+        setAuthStatus("signedOut");
+        setAuthMessage("Finish sign-in in your browser. Echo will continue when you return.");
+      }
     } catch (e) {
-      setAuthStatus("error");
-      setAuthMessage(formatErrorMessage(e));
+      if (googleSignInAttemptRef.current === attempt) {
+        setAuthStatus("error");
+        setAuthMessage(formatErrorMessage(e));
+      }
     }
-  };
-
-  const handleSkipSignInForDev = () => {
-    passwordRecoveryRef.current = false;
-    setAuthUser({
-      id: "local-bypass",
-      email: "Local session",
-      provider: "Local",
-    });
-    setAuthMessage("Local session active.");
-    setAuthStatus("signedIn");
-    setActiveTab("onboarding");
   };
 
   const handleSignInWithEmail = async (email: string, password: string) => {
@@ -2225,22 +2534,24 @@ function MainApp() {
     try {
       const session = await signInWithPassword(email, password);
       passwordRecoveryRef.current = false;
-      applyAuthSession(session);
-      setActiveTab("onboarding");
+      await completeAuthSession(session);
     } catch (e) {
       setAuthStatus("error");
       setAuthMessage(formatErrorMessage(e));
     }
   };
 
-  const handleSignUpWithEmail = async (email: string, password: string) => {
+  const handleSignUpWithEmail = async (
+    email: string,
+    password: string,
+    profile: SignUpProfile
+  ) => {
     setAuthStatus("loading");
     setAuthMessage("");
     try {
-      const result = await signUpWithPassword(email, password);
+      const result = await signUpWithPassword(email, password, profile);
       if (result.session) {
-        applyAuthSession(result.session);
-        setActiveTab("onboarding");
+        await completeAuthSession(result.session);
         return;
       }
       setAuthStatus("emailVerificationPending");
@@ -2271,8 +2582,7 @@ function MainApp() {
       await updatePassword(password);
       passwordRecoveryRef.current = false;
       const session = await getSession();
-      applyAuthSession(session);
-      setActiveTab("onboarding");
+      await completeAuthSession(session);
     } catch (e) {
       setAuthStatus("passwordRecovery");
       setAuthMessage(formatErrorMessage(e));
@@ -2285,8 +2595,13 @@ function MainApp() {
     try {
       await signOut();
       passwordRecoveryRef.current = false;
+      authSessionRef.current = null;
       setAuthUser(null);
       setAuthStatus("signedOut");
+      setEntitlementChecking(false);
+      setEntitlement(FREE_ENTITLEMENT);
+      setEntitlementMessage("");
+      await clearActiveEntitlementUser().catch(() => {});
       setActiveTab("onboarding");
     } catch (e) {
       setAuthStatus("error");
@@ -2414,7 +2729,7 @@ function MainApp() {
       await invoke("open_setup_help", { target: "microphone" }).catch(console.error);
       return;
     }
-    setErrorMsg("Complete this step in onboarding before the main app opens.");
+    setErrorMsg("Complete this step before continuing.");
   };
 
   const startWindowDrag = (event: MouseEvent<HTMLElement> | PointerEvent<HTMLElement>) => {
@@ -2441,34 +2756,19 @@ function MainApp() {
         />
         <section className="onboarding-window" data-tauri-drag-region onMouseDown={startWindowDrag}>
           <AnimatePresence mode="wait" initial={false}>
-            {authStatus === "loading" && (
+            {authStatus !== "signedIn" && (
               <motion.div
-                key="auth-loading"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.99 }}
-                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-              >
-                <Card className="onboarding-card onboarding-card--carousel onboarding-loading-card">
-                  <Chip tone="accent">Account</Chip>
-                  <h3>Preparing Echo</h3>
-                  <p>{authMessage || "Checking your account session..."}</p>
-                </Card>
-              </motion.div>
-            )}
-            {authStatus !== "loading" && authStatus !== "signedIn" && (
-              <motion.div
+                className="first-run-transition"
                 key="auth-gate"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.99 }}
+                initial={false}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
                 transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
               >
                 <AuthGate
                   authMessage={authMessage}
                   authStatus={authStatus}
                   onGoogleSignIn={() => void handleSignInWithGoogle()}
-                  onSkipSignIn={handleSkipSignInForDev}
                   onPasswordReset={(email) => void handleSendPasswordReset(email)}
                   onPasswordUpdate={(password) => void handleUpdatePassword(password)}
                   onRetry={() => {
@@ -2476,34 +2776,64 @@ function MainApp() {
                     setAuthMessage("");
                   }}
                   onSignIn={(email, password) => void handleSignInWithEmail(email, password)}
-                  onSignUp={(email, password) => void handleSignUpWithEmail(email, password)}
+                  onSignUp={(email, password, profile) =>
+                    void handleSignUpWithEmail(email, password, profile)
+                  }
                 />
               </motion.div>
             )}
             {authStatus === "signedIn" && !config && (
               <motion.div
+                className="first-run-transition"
                 key="onboarding-loading"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.99 }}
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                 transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
               >
-                <Card className="onboarding-card onboarding-card--carousel onboarding-loading-card">
-                  <Chip tone="accent">Setup</Chip>
-                  <h3>Preparing Echo</h3>
-                  <p>Loading your setup state...</p>
-                </Card>
+                <FirstRunShell
+                  activeStep={2}
+                  ariaLabel="Preparing Echo setup"
+                  completedThrough={1}
+                  panelClassName="first-run-panel__content--onboarding"
+                >
+                  <div className="onboarding-loading-card" role="status" aria-live="polite">
+                    <div className="auth-state__icon auth-state__icon--loading" aria-hidden>
+                      <span />
+                    </div>
+                    <h2>Opening Echo</h2>
+                    <p>Loading your setup...</p>
+                    <Progress />
+                  </div>
+                </FirstRunShell>
               </motion.div>
             )}
             {authStatus === "signedIn" && config && onboardingCompletionVisible && (
-              <OnboardingSuccess key="onboarding-success" reduceMotion={reduceMotion} />
+              <motion.div
+                className="first-run-transition"
+                key="onboarding-success"
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+                transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
+              >
+                <FirstRunShell
+                  activeStep={null}
+                  ariaLabel="Echo setup complete"
+                  completedThrough={3}
+                  panelClassName="first-run-panel__content--onboarding"
+                >
+                  <OnboardingSuccess reduceMotion={reduceMotion} />
+                </FirstRunShell>
+              </motion.div>
             )}
             {authStatus === "signedIn" && config && !onboardingCompletionVisible && (
               <motion.div
+                className="first-run-transition"
                 key="onboarding-flow"
-                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.99 }}
+                initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                 transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
               >
                 <OnboardingPanel
@@ -2551,12 +2881,13 @@ function MainApp() {
         <div className="sidebar-header" data-tauri-drag-region onMouseDown={startWindowDrag}>
           <span className="app-logo" role="img" aria-label="Echo" />
           <span className="app-wordmark">Echo</span>
+          {entitlement.tier === "pro_lifetime" && <span className="app-pro-badge">PRO</span>}
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
           <NavButton
             active={activeTab === "dictate"}
-            icon={<AudioWaveform />}
+            icon={<Home />}
             label="Home"
             onClick={() => setActiveTab("dictate")}
           />
@@ -2579,10 +2910,7 @@ function MainApp() {
             active={activeTab === "settings"}
             icon={<SettingsIcon />}
             label="Settings"
-            onClick={() => {
-              loadConfig();
-              setActiveTab("settings");
-            }}
+            onClick={() => setActiveTab("settings")}
           />
         </div>
       </aside>
@@ -2617,8 +2945,6 @@ function MainApp() {
                     onAction={handleSetupAction}
                     onDismissMilestone={dismissMilestoneCelebration}
                     onOpenSettings={() => setActiveTab("settings")}
-                    onOpenNotepad={() => setActiveTab("notepad")}
-                    onOpenHistory={() => setActiveTab("history")}
                     onRefresh={loadSetupStatus}
                   />
                 )}
@@ -2637,8 +2963,14 @@ function MainApp() {
                     <Settings
                       authUser={authUser}
                       config={config}
+                      entitlement={entitlement}
+                      entitlementMessage={entitlementMessage}
+                      entitlementChecking={entitlementChecking}
+                      checkoutPending={checkoutPending}
                       onSave={handleSaveSettings}
                       onClearInsights={handleClearInsights}
+                      onStartCheckout={handleStartCheckout}
+                      onRefreshEntitlement={handleRefreshEntitlement}
                       onSignOut={handleSignOut}
                       onCancel={() => {
                         setAppearancePreview(null);
@@ -2693,11 +3025,148 @@ function passwordStrengthError(password: string) {
   return "";
 }
 
+function GoogleMark() {
+  return (
+    <svg aria-hidden viewBox="0 0 18 18">
+      <path
+        d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.797 2.716v2.259h2.909c1.702-1.568 2.684-3.875 2.684-6.616Z"
+        fill="#4285F4"
+      />
+      <path
+        d="M9 18c2.43 0 4.468-.806 5.956-2.179l-2.909-2.259c-.806.54-1.835.86-3.047.86-2.344 0-4.328-1.585-5.037-3.714H.956v2.333A9 9 0 0 0 9 18Z"
+        fill="#34A853"
+      />
+      <path
+        d="M3.963 10.708A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.281-1.708V4.959H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.041l3.007-2.333Z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M9 3.578c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.959l3.007 2.333C4.672 5.163 6.656 3.578 9 3.578Z"
+        fill="#EA4335"
+      />
+    </svg>
+  );
+}
+
+function AuthPasswordField({
+  autoComplete,
+  describedBy,
+  id,
+  label,
+  onChange,
+  placeholder,
+  value,
+  visible,
+  onToggleVisibility,
+}: {
+  autoComplete: string;
+  describedBy?: string;
+  id: string;
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  value: string;
+  visible: boolean;
+  onToggleVisibility: () => void;
+}) {
+  return (
+    <label className="auth-field" htmlFor={id}>
+      <span>{label}</span>
+      <span className="auth-password-control">
+        <input
+          aria-describedby={describedBy}
+          autoComplete={autoComplete}
+          id={id}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          required
+          type={visible ? "text" : "password"}
+          value={value}
+        />
+        <button
+          aria-label={visible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+          className="auth-password-toggle"
+          onClick={onToggleVisibility}
+          type="button"
+        >
+          <AnimatedIconSwap iconKey={visible ? "visible" : "hidden"}>
+            {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+          </AnimatedIconSwap>
+        </button>
+      </span>
+    </label>
+  );
+}
+
+type FirstRunStepNumber = 1 | 2 | 3;
+
+const FIRST_RUN_STEPS: Array<{ number: FirstRunStepNumber; label: string }> = [
+  { number: 1, label: "Create your account" },
+  { number: 2, label: "Set up your microphone" },
+  { number: 3, label: "Try your shortcut" },
+];
+
+function FirstRunShell({
+  activeStep,
+  ariaLabel,
+  children,
+  completedThrough,
+  panelClassName = "",
+}: {
+  activeStep: FirstRunStepNumber | null;
+  ariaLabel: string;
+  children: ReactNode;
+  completedThrough: number;
+  panelClassName?: string;
+}) {
+  return (
+    <section className="first-run-shell" aria-label={ariaLabel}>
+      <aside className="first-run-visual">
+        <div className="first-run-visual__gradient" aria-hidden />
+        <div className="first-run-visual__content">
+          <div className="first-run-brand" aria-label="Echo">
+            <img alt="" src={echoLogoMark} />
+            <span>Echo</span>
+          </div>
+          <h1>Get started with Echo</h1>
+          <p>Complete a few quick steps and start dictating anywhere.</p>
+          <ol className="first-run-roadmap" aria-label="Getting started progress">
+            {FIRST_RUN_STEPS.map((step) => {
+              const isActive = activeStep === step.number;
+              const isComplete = step.number <= completedThrough && !isActive;
+              return (
+                <li
+                  className={`${isActive ? "is-active" : ""}${isComplete ? " is-complete" : ""}`.trim()}
+                  key={step.number}
+                  aria-current={isActive ? "step" : undefined}
+                  aria-label={`${step.label}, ${isActive ? "current step" : isComplete ? "completed" : "not started"}`}
+                >
+                  <span aria-hidden>
+                    {isComplete ? <Check size={13} /> : step.number}
+                  </span>
+                  <strong>{step.label}</strong>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </aside>
+
+      <div className="first-run-panel">
+        <div className="first-run-panel__mobile-brand" aria-label="Echo">
+          <img alt="" src={echoLogoMark} />
+          <span>Echo</span>
+        </div>
+        <div className={`first-run-panel__content ${panelClassName}`.trim()}>{children}</div>
+      </div>
+    </section>
+  );
+}
+
 function AuthGate({
   authMessage,
   authStatus,
   onGoogleSignIn,
-  onSkipSignIn,
   onPasswordReset,
   onPasswordUpdate,
   onRetry,
@@ -2707,21 +3176,37 @@ function AuthGate({
   authMessage: string;
   authStatus: AuthStatus;
   onGoogleSignIn: () => void;
-  onSkipSignIn: () => void;
   onPasswordReset: (email: string) => void;
   onPasswordUpdate: (password: string) => void;
   onRetry: () => void;
   onSignIn: (email: string, password: string) => void;
-  onSignUp: (email: string, password: string) => void;
+  onSignUp: (email: string, password: string, profile: SignUpProfile) => void;
 }) {
-  const [mode, setMode] = useState<"login" | "signup" | "reset">("login");
+  const reduceMotion = useReducedMotion() ?? false;
+  const [mode, setMode] = useState<"login" | "signup" | "reset">("signup");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [confirmPasswordVisible, setConfirmPasswordVisible] = useState(false);
   const [localError, setLocalError] = useState("");
+  const [pendingLabel, setPendingLabel] = useState("");
+  const isLoading = authStatus === "loading";
   const isRecovery = authStatus === "passwordRecovery";
   const isPending = authStatus === "emailVerificationPending";
   const isError = authStatus === "error";
+  const transition = reduceMotion
+    ? { duration: 0 }
+    : { duration: 0.24, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] };
+
+  const changeMode = (nextMode: "login" | "signup" | "reset") => {
+    setMode(nextMode);
+    setLocalError("");
+    setPendingLabel("");
+    if (authMessage || isError) onRetry();
+  };
 
   const submitEmail = (event: React.FormEvent) => {
     event.preventDefault();
@@ -2732,6 +3217,7 @@ function AuthGate({
       return;
     }
     if (mode === "reset") {
+      setPendingLabel("Sending your reset link...");
       onPasswordReset(trimmedEmail);
       return;
     }
@@ -2740,6 +3226,12 @@ function AuthGate({
       return;
     }
     if (mode === "signup") {
+      const trimmedFirstName = firstName.trim();
+      const trimmedLastName = lastName.trim();
+      if (!trimmedFirstName || !trimmedLastName) {
+        setLocalError("Enter your first and last name.");
+        return;
+      }
       const strengthError = passwordStrengthError(password);
       if (strengthError) {
         setLocalError(strengthError);
@@ -2749,9 +3241,14 @@ function AuthGate({
         setLocalError("Passwords do not match.");
         return;
       }
-      onSignUp(trimmedEmail, password);
+      setPendingLabel("Creating your account...");
+      onSignUp(trimmedEmail, password, {
+        firstName: trimmedFirstName,
+        lastName: trimmedLastName,
+      });
       return;
     }
+    setPendingLabel("Signing you in...");
     onSignIn(trimmedEmail, password);
   };
 
@@ -2767,169 +3264,261 @@ function AuthGate({
       setLocalError("Passwords do not match.");
       return;
     }
+    setPendingLabel("Updating your password...");
     onPasswordUpdate(password);
   };
 
   const body = () => {
+    if (isLoading) {
+      return (
+        <div className="auth-state auth-state--loading" role="status">
+          <div className="auth-state__icon auth-state__icon--loading" aria-hidden>
+            <span />
+          </div>
+          <h2>Opening Echo</h2>
+          <p>{authMessage || pendingLabel || "Checking your account session..."}</p>
+          <Progress />
+        </div>
+      );
+    }
+
     if (isRecovery) {
       return (
-        <form className="auth-form" onSubmit={submitNewPassword}>
-          <Chip tone="accent">Password recovery</Chip>
+        <form className="auth-form auth-form--recovery" onSubmit={submitNewPassword}>
           <h2>Set a new password</h2>
           <p>Choose a new password for your Echo account, then setup will continue.</p>
-          <label className="auth-field">
-            <span>New password</span>
-            <input
-              className="ui-input"
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
-              value={password}
-            />
-          </label>
-          <label className="auth-field">
-            <span>Confirm password</span>
-            <input
-              className="ui-input"
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              type="password"
-              value={confirmPassword}
-            />
-          </label>
+          <AuthPasswordField
+            autoComplete="new-password"
+            describedBy="auth-password-help"
+            id="auth-new-password"
+            label="New password"
+            onChange={setPassword}
+            onToggleVisibility={() => setPasswordVisible((visible) => !visible)}
+            placeholder="Enter your new password"
+            value={password}
+            visible={passwordVisible}
+          />
+          <small className="auth-field-hint" id="auth-password-help">
+            Must be at least 8 characters and include a letter and number.
+          </small>
+          <AuthPasswordField
+            autoComplete="new-password"
+            id="auth-confirm-new-password"
+            label="Confirm password"
+            onChange={setConfirmPassword}
+            onToggleVisibility={() => setConfirmPasswordVisible((visible) => !visible)}
+            placeholder="Repeat your new password"
+            value={confirmPassword}
+            visible={confirmPasswordVisible}
+          />
           {(localError || authMessage) && (
             <Alert tone={localError ? "error" : "info"}>{localError || authMessage}</Alert>
           )}
-          <Button fullWidth icon={<KeyRound size={16} />} type="submit" variant="primary">
-            Update Password
-          </Button>
+          <button className="auth-submit-button" type="submit">Update password</button>
         </form>
       );
     }
 
     if (isPending) {
       return (
-        <div className="auth-form">
-          <Chip tone="accent">Verify email</Chip>
+        <div className="auth-state">
+          <div className="auth-state__icon" aria-hidden>
+            <Mail size={22} />
+          </div>
           <h2>Check your email</h2>
           <p>{authMessage || "Open the verification link on this computer to continue setup."}</p>
-          <Alert tone="info">
+          <p className="auth-state__supporting">
             Echo will resume automatically after the verification link opens the app.
-          </Alert>
-          <Button icon={<Mail size={16} />} onClick={onRetry} variant="secondary">
-            Back to Sign In
-          </Button>
+          </p>
+          <button
+            className="auth-submit-button"
+            onClick={() => {
+              setMode("login");
+              onRetry();
+            }}
+            type="button"
+          >
+            Back to log in
+          </button>
         </div>
       );
     }
 
+    const isSignup = mode === "signup";
+    const isReset = mode === "reset";
+
     return (
       <form className="auth-form" onSubmit={submitEmail}>
-        <Chip tone="accent">Account</Chip>
-        <h2>Let's get you started</h2>
-        <p>Create an Echo account or sign in before setup.</p>
-        <Button fullWidth icon={<LogIn size={16} />} onClick={onGoogleSignIn} variant="primary">
-          Sign in via browser
-        </Button>
-        <Button fullWidth onClick={onSkipSignIn} variant="secondary">
-          Skip sign in
-        </Button>
-        <div className="auth-tabs" role="tablist" aria-label="Email auth mode">
-          <button
-            className={mode === "login" ? "is-active" : ""}
-            onClick={() => {
-              setMode("login");
-              setLocalError("");
-            }}
-            type="button"
-          >
-            Log In
-          </button>
-          <button
-            className={mode === "signup" ? "is-active" : ""}
-            onClick={() => {
-              setMode("signup");
-              setLocalError("");
-            }}
-            type="button"
-          >
-            Create
-          </button>
+        <div className="auth-form__heading">
+          <h2>{isSignup ? "Create your account" : isReset ? "Reset your password" : "Welcome back"}</h2>
+          <p>
+            {isSignup
+              ? "Enter your details to start using Echo."
+              : isReset
+                ? "Enter your email and Echo will send you a reset link."
+                : "Sign in to continue to Echo."}
+          </p>
         </div>
-        <label className="auth-field">
+
+        {!isReset && (
+          <>
+            <button
+              className="auth-google-button"
+              onClick={() => {
+                setPendingLabel("Opening your browser to finish Google sign-in...");
+                onGoogleSignIn();
+              }}
+              type="button"
+            >
+              <GoogleMark />
+              <span>Continue with Google</span>
+            </button>
+            <div className="auth-divider" aria-hidden>
+              <span>or</span>
+            </div>
+          </>
+        )}
+
+        {isSignup && (
+          <div className="auth-name-grid">
+            <label className="auth-field" htmlFor="auth-first-name">
+              <span>First name</span>
+              <input
+                autoComplete="given-name"
+                id="auth-first-name"
+                onChange={(event) => setFirstName(event.target.value)}
+                placeholder="e.g. John"
+                required
+                type="text"
+                value={firstName}
+              />
+            </label>
+            <label className="auth-field" htmlFor="auth-last-name">
+              <span>Last name</span>
+              <input
+                autoComplete="family-name"
+                id="auth-last-name"
+                onChange={(event) => setLastName(event.target.value)}
+                placeholder="e.g. Francisco"
+                required
+                type="text"
+                value={lastName}
+              />
+            </label>
+          </div>
+        )}
+
+        <label className="auth-field" htmlFor="auth-email">
           <span>Email</span>
           <input
             autoComplete="email"
-            className="ui-input"
+            id="auth-email"
             onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+            required
             type="email"
             value={email}
           />
         </label>
-        {mode !== "reset" && (
-          <label className="auth-field">
-            <span>Password</span>
-            <input
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              className="ui-input"
-              onChange={(event) => setPassword(event.target.value)}
-              type="password"
+
+        {!isReset && (
+          <>
+            <AuthPasswordField
+              autoComplete={isSignup ? "new-password" : "current-password"}
+              describedBy={isSignup ? "auth-password-help" : undefined}
+              id="auth-password"
+              label="Password"
+              onChange={setPassword}
+              onToggleVisibility={() => setPasswordVisible((visible) => !visible)}
+              placeholder="Enter your password"
               value={password}
+              visible={passwordVisible}
             />
-          </label>
+            {isSignup && (
+              <small className="auth-field-hint" id="auth-password-help">
+                Must be at least 8 characters and include a letter and number.
+              </small>
+            )}
+          </>
         )}
-        {mode === "signup" && (
-          <label className="auth-field">
-            <span>Confirm password</span>
-            <input
-              autoComplete="new-password"
-              className="ui-input"
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              type="password"
-              value={confirmPassword}
-            />
-          </label>
+
+        {isSignup && (
+          <AuthPasswordField
+            autoComplete="new-password"
+            id="auth-confirm-password"
+            label="Confirm password"
+            onChange={setConfirmPassword}
+            onToggleVisibility={() => setConfirmPasswordVisible((visible) => !visible)}
+            placeholder="Repeat your password"
+            value={confirmPassword}
+            visible={confirmPasswordVisible}
+          />
         )}
-        {mode === "reset" && (
-          <Alert tone="info">Enter your email and Echo will send a password reset link.</Alert>
+
+        {mode === "login" && (
+          <button
+            className="auth-text-button auth-text-button--forgot"
+            onClick={() => changeMode("reset")}
+            type="button"
+          >
+            Forgot password?
+          </button>
         )}
+
         {(localError || authMessage) && (
           <Alert tone={localError || isError ? "error" : "info"}>{localError || authMessage}</Alert>
         )}
-        <div className="auth-actions">
-          <Button fullWidth icon={<ArrowRight size={16} />} type="submit" variant="primary">
-            {mode === "signup" ? "Create Account" : mode === "reset" ? "Send Reset Link" : "Log In"}
-          </Button>
+
+        <button className="auth-submit-button" type="submit">
+          {isSignup ? "Create account" : isReset ? "Send reset link" : "Log in"}
+        </button>
+
+        <p className="auth-mode-switch">
+          {isSignup ? "Already have an account?" : isReset ? "Remember your password?" : "New to Echo?"}
           <Button
-            fullWidth
+            className="auth-mode-switch__button"
             onClick={() => {
-              setMode(mode === "reset" ? "login" : "reset");
-              setLocalError("");
+              changeMode(isSignup ? "login" : isReset ? "login" : "signup");
             }}
             type="button"
             variant="ghost"
           >
-            {mode === "reset" ? "Back to login" : "Forgot password"}
+            {isSignup ? "Log in" : isReset ? "Back to log in" : "Create an account"}
           </Button>
-        </div>
+        </p>
       </form>
     );
   };
 
+  const bodyKey = isLoading
+    ? "loading"
+    : isRecovery
+      ? "recovery"
+      : isPending
+        ? "pending"
+        : mode;
+
   return (
-    <section className="auth-gate" aria-label="Echo account">
-      <div className="auth-gate__panel">{body()}</div>
-      <div className="auth-gate__visual" aria-hidden>
-        <div className="auth-gate__visual-copy">
-          <span>Private by default</span>
-          <strong>Dictate locally. Sign in for your Echo account.</strong>
-          <p>History, notes, and insights stay on this device in v1.</p>
-        </div>
-        <div className="auth-gate__metric">
-          <AudioWaveform size={24} />
-          <span>220 wpm</span>
-        </div>
-      </div>
-    </section>
+    <FirstRunShell activeStep={1} ariaLabel="Echo account" completedThrough={0}>
+      <AnimatePresence initial={false} mode="wait">
+        <motion.div
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+          initial={reduceMotion ? { opacity: 1 } : { opacity: 0, y: 8 }}
+          key={bodyKey}
+          transition={transition}
+        >
+          {body()}
+        </motion.div>
+      </AnimatePresence>
+    </FirstRunShell>
   );
+}
+
+function OnboardingStatusIcon({ status }: { status?: SetupCheck["status"] }) {
+  if (status === "ok") return <CheckCircle2 size={16} />;
+  if (status === "error") return <AlertCircle size={16} />;
+  return <CircleDot size={16} />;
 }
 
 function OnboardingPanel({
@@ -2969,11 +3558,11 @@ function OnboardingPanel({
   onStartFirstDictation: () => void;
   onStopFirstDictation: () => void;
 }) {
-  type OnboardingStep = "welcome" | "permissions" | "hotkeyTest";
+  const reduceMotion = useReducedMotion() ?? false;
+  type OnboardingStep = "permissions" | "hotkeyTest";
   const steps: Array<{ id: OnboardingStep; label: string }> = [
-    { id: "welcome", label: "Welcome" },
-    { id: "permissions", label: "Permissions" },
-    { id: "hotkeyTest", label: "Hotkey Test" },
+    { id: "permissions", label: "Set up your microphone" },
+    { id: "hotkeyTest", label: "Try your shortcut" },
   ];
   const [currentIndex, setCurrentIndex] = useState(0);
   const [shortcutDraft, setShortcutDraft] = useState(config.shortcut);
@@ -2982,6 +3571,7 @@ function OnboardingPanel({
   const [devices, setDevices] = useState<string[]>([]);
   const [micDevice, setMicDevice] = useState(config.input_device ?? "");
   const [micTestState, setMicTestState] = useState<"idle" | "testing" | "success" | "fail">("idle");
+  const [micTestMessage, setMicTestMessage] = useState("");
   const [micLevel, setMicLevel] = useState(0);
   const ready = setupStatus?.ready ?? false;
   const currentStep = steps[currentIndex];
@@ -2990,6 +3580,37 @@ function OnboardingPanel({
   const pasteCheck = setupStatus?.checks.find((check) => check.id === "paste");
   const formattedShortcut = formatShortcutForPlatform(config.shortcut, platform);
   const canFinish = ready && !shortcutError && firstDictationPassed;
+  const overallStep = (currentIndex + 2) as FirstRunStepNumber;
+  const showSetupBlocker = !ready;
+  const micStatusTone =
+    micTestState === "testing"
+      ? "info"
+      : micTestState === "fail"
+        ? "error"
+        : microphoneCheck?.status === "ok" || micTestState === "success"
+          ? "success"
+          : "warning";
+  const micStatusText =
+    micTestState === "testing"
+      ? "Listening for two seconds — speak now."
+      : micTestState === "success"
+      ? "Microphone is working."
+      : micTestState === "fail"
+        ? micTestMessage || "No audio detected. Check the selected device and microphone permission."
+        : microphoneCheck?.message || "Run a quick microphone test before continuing.";
+  const pasteReady = pasteCheck?.status === "ok";
+  const pasteStatusTone = pasteReady ? "success" : platform === "macos" ? "warning" : "info";
+  const pasteStatusText = pasteReady
+    ? pasteCheck?.message || "Paste is ready."
+    : pasteCheck?.message || "Refresh checks to confirm paste readiness.";
+  const hotkeyStateLabel =
+    firstDictationState === "recording"
+      ? "Listening"
+      : firstDictationState === "processing"
+        ? "Transcribing"
+        : firstDictationPassed
+          ? "Test passed"
+          : "Ready to test";
 
   useEffect(() => {
     setShortcutDraft(config.shortcut);
@@ -3013,16 +3634,7 @@ function OnboardingPanel({
   const goNext = () => setCurrentIndex((index) => Math.min(index + 1, steps.length - 1));
   const goBack = () => setCurrentIndex((index) => Math.max(index - 1, 0));
 
-  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const accelerator = acceleratorFromKeyboardEvent(event);
-    if (!accelerator) {
-      setShortcutMessage("Press one final key to complete the shortcut.");
-      return;
-    }
-
+  const handleShortcutCapture = (accelerator: string) => {
     setShortcutDraft(accelerator);
     setShortcutSaving(true);
     setShortcutMessage(`Captured ${accelerator}. Checking whether the system can use it...`);
@@ -3046,6 +3658,7 @@ function OnboardingPanel({
 
   const handleTestMic = async () => {
     setMicTestState("testing");
+    setMicTestMessage("");
     setMicLevel(0);
     if (!HAS_TAURI) {
       window.setTimeout(() => {
@@ -3058,50 +3671,40 @@ function OnboardingPanel({
     try {
       const peak = await invoke<number>("test_microphone", { deviceName: micDevice || null });
       setMicLevel(peak);
-      setMicTestState(peak > 0.01 ? "success" : "fail");
+      if (peak > 0.01) {
+        setMicTestState("success");
+      } else {
+        setMicTestState("fail");
+        setMicTestMessage(
+          platform === "macos"
+            ? "No audio detected. Enable Echo in System Settings > Privacy & Security > Microphone, then try again."
+            : "No audio detected. Check the selected input device and microphone permission."
+        );
+      }
       await onRefresh();
-    } catch {
+    } catch (e) {
       setMicTestState("fail");
+      setMicTestMessage(formatErrorMessage(e));
     }
   };
 
   const renderStep = () => {
-    if (currentStep.id === "welcome") {
-      return (
-        <div className="onboarding-welcome">
-          <div className="onboarding-welcome__backdrop" aria-hidden>
-            <img src={echoLogoMark} alt="" />
-          </div>
-          <img className="onboarding-welcome__logo" src={echoLogoMark} alt="" />
-          <h3>Welcome to Echo</h3>
-          <Button icon={<ArrowRight size={16} />} onClick={goNext} variant="primary">
-            Continue
-          </Button>
-        </div>
-      );
-    }
-
     if (currentStep.id === "permissions") {
       return (
-        <>
-          <div className="onboarding-card__header">
-            <div>
-              <Chip tone="accent">Step 2 of {steps.length}</Chip>
-              <h3>Microphone and Paste</h3>
-            </div>
-            <IconButton label="Refresh setup checks" onClick={() => void onRefresh()}>
-              <RefreshCw size={16} />
-            </IconButton>
-          </div>
-          <div className="onboarding-permission-grid">
-            <div className="onboarding-permission-card">
-              <div className="onboarding-permission-card__title">
-                <Mic size={17} />
-                <strong>Microphone</strong>
+        <div className="onboarding-step-stack">
+          <div className="onboarding-task-list">
+            <div className="onboarding-task-row">
+              <div className="onboarding-task-row__header">
+                <span aria-hidden className={`onboarding-task-row__icon onboarding-task-row__icon--${micStatusTone}`}>
+                  <OnboardingStatusIcon status={microphoneCheck?.status} />
+                </span>
+                <div>
+                  <strong>Microphone</strong>
+                  <p>Choose an input and confirm Echo can hear you.</p>
+                </div>
               </div>
-              <p>Choose the microphone Echo should listen to, then run a quick level test.</p>
               <label className="onboarding-hotkey-field">
-                <span>Input Device</span>
+                <span>Microphone</span>
                 <select
                   className="ui-select"
                   onChange={(event) => void handleMicDeviceChange(event.target.value)}
@@ -3116,8 +3719,13 @@ function OnboardingPanel({
                 </select>
               </label>
               <div className="onboarding-inline-actions">
-                <Button icon={<Mic size={16} />} onClick={() => void handleTestMic()} variant="primary">
-                  {micTestState === "testing" ? "Listening" : "Test Microphone"}
+                <Button
+                  disabled={micTestState === "testing"}
+                  icon={<Mic size={16} />}
+                  onClick={() => void handleTestMic()}
+                  variant="primary"
+                >
+                  {micTestState === "testing" ? "Listening..." : "Test Microphone"}
                 </Button>
                 {microphoneCheck?.action_label && (
                   <Button onClick={() => onAction(microphoneCheck)} variant="secondary">
@@ -3128,28 +3736,22 @@ function OnboardingPanel({
               {(micTestState === "testing" || micTestState === "success") && (
                 <Progress value={micTestState === "success" ? Math.min(micLevel * 100, 100) : undefined} />
               )}
-              <Alert tone={micTestState === "fail" ? "error" : microphoneCheck?.status === "ok" || micTestState === "success" ? "success" : "warning"}>
-                {micTestState === "success"
-                  ? "Microphone is working."
-                  : micTestState === "fail"
-                    ? "No audio detected. Check the selected device and system microphone permission."
-                    : microphoneCheck?.message || "Run the microphone test before continuing."}
-              </Alert>
+              <Alert tone={micStatusTone}>{micStatusText}</Alert>
             </div>
 
-            <div className="onboarding-permission-card">
-              <div className="onboarding-permission-card__title">
-                <Copy size={17} />
-                <strong>{platform === "macos" ? "Paste Permission" : "Paste Readiness"}</strong>
-              </div>
-              <p>
-                {platform === "macos"
-                  ? "Enable Accessibility so Echo can paste automatically after dictation."
-                  : "Echo uses clipboard write and paste simulation where available."}
-              </p>
-              <div className="onboarding-status-card">
-                <strong>{pasteCheck?.label ?? "Paste readiness"}</strong>
-                <span>{pasteCheck?.message ?? "Refresh setup checks to confirm paste readiness."}</span>
+            <div className="onboarding-task-row">
+              <div className="onboarding-task-row__header">
+                <span aria-hidden className={`onboarding-task-row__icon onboarding-task-row__icon--${pasteStatusTone}`}>
+                  <OnboardingStatusIcon status={pasteCheck?.status} />
+                </span>
+                <div>
+                  <strong>{platform === "macos" ? "Paste access" : "Paste readiness"}</strong>
+                  <p>
+                    {platform === "macos"
+                      ? "Let Echo paste automatically after dictation."
+                      : "Confirm clipboard and paste behavior for this device."}
+                  </p>
+                </div>
               </div>
               <div className="onboarding-inline-actions">
                 {platform === "macos" && (
@@ -3161,40 +3763,40 @@ function OnboardingPanel({
                   Refresh Checks
                 </Button>
               </div>
-              <Alert tone={pasteCheck?.status === "ok" ? "success" : platform === "macos" ? "warning" : "info"}>
-                {platform === "macos"
-                  ? "If Accessibility is unavailable, Echo keeps the transcript safe on the clipboard."
-                  : "No macOS Accessibility permission is needed on Windows."}
-              </Alert>
+              <Alert tone={pasteStatusTone}>{pasteStatusText}</Alert>
+              {!pasteReady && platform === "macos" && (
+                <p className="onboarding-muted-note">If Accessibility is unavailable, Echo keeps the transcript on the clipboard.</p>
+              )}
             </div>
           </div>
-        </>
+        </div>
       );
     }
 
     return (
-      <>
-        <Chip tone="accent">Step 3 of {steps.length}</Chip>
-        <h3>Hotkey Test</h3>
-        <p>
-          Press and hold <strong>{formattedShortcut}</strong>, say a short sentence, then release
-          the hotkey to test Echo.
-        </p>
-        <div className="onboarding-hotkey-test">
-          <Keyboard size={22} />
-          <strong>{formattedShortcut}</strong>
-          <span>{firstDictationState === "recording" ? "Listening" : firstDictationState === "processing" ? "Processing" : "Ready to test"}</span>
+      <div className="onboarding-step-stack">
+        <div className="onboarding-status-line">
+          <Chip tone={firstDictationPassed ? "success" : "neutral"}>{hotkeyStateLabel}</Chip>
         </div>
-        <label className="onboarding-hotkey-field">
+        <div className="onboarding-hotkey-test">
+          <span className="onboarding-hotkey-test__icon" aria-hidden>
+            <Keyboard size={20} />
+          </span>
+          <ShortcutKeys shortcut={formattedShortcut} />
+          <span>{firstDictationPassed ? "The full dictation loop passed." : "Echo will record, transcribe, then paste or copy."}</span>
+        </div>
+        <div className="onboarding-hotkey-field">
           <span>Hotkey</span>
-          <input
-            className={`ui-input${shortcutError ? " ui-input--error" : ""}`}
+          <ShortcutCapture
+            displayValue={formatShortcutForPlatform(shortcutDraft, platform)}
+            invalid={!!shortcutError}
+            onCapture={handleShortcutCapture}
             onFocus={() => setShortcutMessage("Press any key or key combo. Escape can be captured here.")}
-            onKeyDown={handleShortcutKeyDown}
-            readOnly
-            value={formatShortcutForPlatform(shortcutDraft, platform)}
+            onIncomplete={() => setShortcutMessage("Press one final key to complete the shortcut.")}
+            platform={platform}
+            value={shortcutDraft}
           />
-        </label>
+        </div>
         <Alert tone={shortcutError ? "error" : shortcutSaving ? "info" : "success"}>
           {shortcutError || shortcutMessage}
         </Alert>
@@ -3208,9 +3810,9 @@ function OnboardingPanel({
             fullWidth
             icon={<Mic size={16} />}
             onClick={onStartFirstDictation}
-            variant="primary"
+            variant={firstDictationPassed ? "secondary" : "primary"}
           >
-            {firstDictationState === "processing" ? "Processing" : "Start Test Without Hotkey"}
+            {firstDictationState === "processing" ? "Transcribing" : firstDictationPassed ? "Run test again" : "Start test"}
           </Button>
         )}
         {firstDictationMessage && (
@@ -3230,79 +3832,74 @@ function OnboardingPanel({
         )}
         {providerCheck?.status === "ok" && (!ready || shortcutError || !firstDictationPassed) && (
           <Alert tone="warning">
-            Pass the hotkey test before finishing onboarding.
+            Start the test before finishing onboarding.
           </Alert>
         )}
         {errorMsg && <Alert tone="error">{errorMsg}</Alert>}
-      </>
+      </div>
     );
   };
 
   return (
-    <section className="onboarding-panel" aria-label="Echo onboarding">
-      <div className="page-heading page-heading--split">
-        <div>
-          <p>First-run setup</p>
-          <h2>{currentStep.label}</h2>
-          <span>Step {currentIndex + 1} of {steps.length}</span>
-        </div>
-        <Chip tone={ready ? "success" : "warning"}>{ready ? "Ready" : "Needs setup"}</Chip>
-      </div>
+    <FirstRunShell
+      activeStep={overallStep}
+      ariaLabel={`Echo onboarding: ${currentStep.label}`}
+      completedThrough={overallStep - 1}
+      panelClassName="first-run-panel__content--onboarding"
+    >
+      <section className="onboarding-panel" aria-label={currentStep.label}>
+        <header className="onboarding-heading">
+          <div className="onboarding-heading__title">
+            <span className="onboarding-heading__progress">Step {overallStep} of 3</span>
+            <h2>{currentStep.label}</h2>
+            <p>
+              {currentStep.id === "permissions"
+                ? "Choose your microphone and confirm Echo can paste on this computer."
+                : "Hold your shortcut, say a short sentence, then release."}
+            </p>
+          </div>
+          {showSetupBlocker && <Chip tone="warning">Needs setup</Chip>}
+        </header>
 
-      <div className="onboarding-progress" aria-label="Onboarding steps">
-        {steps.map((step, index) => (
-          <button
-            aria-current={index === currentIndex ? "step" : undefined}
-            className={index === currentIndex ? "is-active" : ""}
-            key={step.id}
-            onClick={() => setCurrentIndex(index)}
-            type="button"
-          >
-            <span>{index + 1}</span>
-            <strong>{step.label}</strong>
-          </button>
-        ))}
-      </div>
-
-      <div className="onboarding-carousel">
-        <Card className="onboarding-card onboarding-card--carousel">
+        <div className="onboarding-flow">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={currentStep.id}
               className="onboarding-step"
-              initial={{ opacity: 0, x: 16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              transition={PANEL_TRANSITION}
+              initial={reduceMotion ? { opacity: 1 } : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+              transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
             >
               {renderStep()}
             </motion.div>
           </AnimatePresence>
-        </Card>
-      </div>
-
-      <div className="onboarding-actions">
-        <div className="onboarding-actions__side">
-          <Button disabled={currentIndex === 0} onClick={goBack} variant="secondary">
-            Back
-          </Button>
-          <Button onClick={onSkip} variant="ghost">
-            Skip onboarding
-          </Button>
         </div>
-        <div className="onboarding-actions__side onboarding-actions__side--end">
-          {currentStep.id !== "welcome" && (
+
+        <div className="onboarding-actions">
+          <div className="onboarding-actions__side">
+            {currentIndex > 0 && (
+              <Button onClick={goBack} variant="secondary">
+                Back
+              </Button>
+            )}
+            <Button onClick={onSkip} variant="ghost">
+              Skip onboarding
+            </Button>
+          </div>
+          <div className="onboarding-actions__side onboarding-actions__side--end">
             <Button
               disabled={currentIndex === steps.length - 1 && !canFinish}
+              icon={currentIndex === 0 ? <ArrowRight size={16} /> : undefined}
               onClick={currentIndex === steps.length - 1 ? onComplete : goNext}
               variant="primary"
             >
-              {currentIndex === steps.length - 1 ? "Finish onboarding" : "Next"}
+              {currentIndex === steps.length - 1 ? "Finish" : "Continue"}
             </Button>
-          )}
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+    </FirstRunShell>
   );
 }
 
@@ -3334,69 +3931,38 @@ function OnboardingSuccess({ reduceMotion }: { reduceMotion: boolean }) {
 
 function StatsBentoDashboard({ stats }: { stats: DictationStats }) {
   const nextMilestone = stats.next_milestone;
-  const progress = Math.round(Math.min(Math.max(stats.next_milestone_progress, 0), 1) * 100);
   const remaining = nextMilestone ? Math.max(nextMilestone - stats.total_words, 0) : 0;
   const finalMilestone = WORD_MILESTONES[WORD_MILESTONES.length - 1];
 
   return (
-    <section className="stats-bento" aria-label="Dictation insights">
-      <article className="stats-tile stats-tile--total">
-        <span className="stats-tile__icon" aria-hidden>
-          <Trophy size={16} />
-        </span>
-        <div>
+    <Disclosure
+      className="insights-disclosure"
+      summary="Insights"
+      summaryMeta={`${formatInsightNumber(stats.total_words)} words`}
+    >
+      <section className="insights-grid" aria-label="Dictation insights">
+        <div className="insight-value">
           <span>Total words</span>
           <strong>{formatInsightNumber(stats.total_words)}</strong>
         </div>
-      </article>
-
-      <article className="stats-tile stats-tile--wpm">
-        <span className="stats-tile__icon" aria-hidden>
-          <Gauge size={16} />
-        </span>
-        <div>
-          <span>WPM</span>
+        <div className="insight-value">
+          <span>Words per minute</span>
           <strong>{formatInsightNumber(stats.rolling_wpm)}</strong>
         </div>
-      </article>
-
-      <article className="stats-tile stats-tile--streak">
-        <span className="stats-tile__icon" aria-hidden>
-          <Flame size={16} />
-        </span>
-        <div>
+        <div className="insight-value">
           <span>Day streak</span>
           <strong>{formatInsightNumber(stats.day_streak)}</strong>
         </div>
-      </article>
-
-      <article className="stats-tile stats-tile--progress">
-        <div className="stats-tile__progress-head">
-          <span className="stats-tile__icon" aria-hidden>
-            <Target size={16} />
-          </span>
-          <div>
-            <span>Next milestone</span>
-            <strong>{nextMilestone ? `${progress}%` : "Complete"}</strong>
-          </div>
+        <div className="insight-value">
+          <span>Next milestone</span>
+          <strong>
+            {nextMilestone
+              ? `${formatMilestone(remaining)} words remaining`
+              : `${formatMilestone(finalMilestone)} reached`}
+          </strong>
         </div>
-        <div
-          className="stats-progress"
-          aria-label={
-            nextMilestone
-              ? `${progress}% toward ${formatMilestone(nextMilestone)} words`
-              : `${formatMilestone(finalMilestone)} word milestone complete`
-          }
-        >
-          <span style={{ width: `${nextMilestone ? progress : 100}%` }} />
-        </div>
-        <p>
-          {nextMilestone
-            ? `${formatMilestone(remaining)} words to ${formatMilestone(nextMilestone)}`
-            : `${formatMilestone(finalMilestone)} word milestone reached`}
-        </p>
-      </article>
-    </section>
+      </section>
+    </Disclosure>
   );
 }
 
@@ -3419,11 +3985,18 @@ const SHORTCUT_KEY_SYMBOLS: Record<string, string> = {
 };
 
 function ShortcutKeys({ shortcut }: { shortcut: string }) {
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
   const keys = shortcut
     .split(/\s*\+\s*/)
     .map((key) => key.trim())
     .filter(Boolean)
-    .map((key) => SHORTCUT_KEY_SYMBOLS[key.toLowerCase()] ?? key);
+    .map((key) =>
+      key.toLowerCase() === "commandorcontrol"
+        ? isMac
+          ? SHORTCUT_KEY_SYMBOLS.command
+          : SHORTCUT_KEY_SYMBOLS.control
+        : SHORTCUT_KEY_SYMBOLS[key.toLowerCase()] ?? key
+    );
 
   return (
     <span className="shortcut-keys" aria-label={`Shortcut ${shortcut}`}>
@@ -3449,8 +4022,6 @@ function DictatePanel({
   onAction,
   onDismissMilestone,
   onOpenSettings,
-  onOpenNotepad,
-  onOpenHistory,
   onRefresh,
 }: {
   appState: AppState;
@@ -3465,19 +4036,20 @@ function DictatePanel({
   onAction: (check: SetupCheck) => void;
   onDismissMilestone: () => void;
   onOpenSettings: () => void;
-  onOpenNotepad: () => void;
-  onOpenHistory: () => void;
   onRefresh: () => Promise<SetupStatus | null>;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const needsSetup = Boolean(setupStatus && !setupStatus.ready);
   const localPreviewMessage =
-    "Local preview: Whisper runs on this device and returns the raw transcript. Cloud cleanup is skipped in local mode, so wording stays closer to what you said.";
+    "On-device preview: Whisper runs privately on this computer. Cloud cleanup is not used, so wording stays closer to what you said.";
+  const customerMessage = presentHomeMessage(errorMsg);
+  const showMessageDetails =
+    Boolean(errorMsg) && customerMessage !== errorMsg && !errorMsg.toLowerCase().includes("gsk_");
+  const messageNeedsSettings = /secure storage|api key|provider|model|shortcut|setup/i.test(errorMsg);
 
   return (
     <div className="dictate-panel">
       <motion.section
-        key={appState}
         className={`dictate-hero dictate-hero--${appState}`}
         initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -3487,16 +4059,26 @@ function DictatePanel({
         <div className="dictate-hero__mark">
           <StateGlyph state={appState} />
         </div>
-        <h2 className="dictate-hero__title">{stateTitle(appState)}</h2>
-        <p className="dictate-hero__hint">{stateHint(appState, config?.shortcut, errorMsg)}</p>
+        <AnimatePresence initial={false} mode="wait">
+          <motion.div
+            key={`${appState}-copy`}
+            className="dictate-hero__copy"
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4, filter: "blur(4px)" }}
+            transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+          >
+            <h2 className="dictate-hero__title">{stateTitle(appState)}</h2>
+            <p className="dictate-hero__hint">{stateHint(appState, config?.shortcut, errorMsg)}</p>
+          </motion.div>
+        </AnimatePresence>
 
         {appState === "idle" && (
           <div className="dictate-hero__meta">
-            <ShortcutKeys shortcut={config?.shortcut ?? "Command + D"} />
-            <Chip icon={<Sparkles size={14} />}>{cleanupChipLabel(config)}</Chip>
+            <ShortcutKeys shortcut={config?.shortcut ?? "CommandOrControl+D"} />
             {config?.model_provider === "local" && (
               <IconButton className="dictate-hero__info" label={localPreviewMessage}>
-                <Info size={15} strokeWidth={2.2} />
+                <Info size={15} />
               </IconButton>
             )}
           </div>
@@ -3526,18 +4108,22 @@ function DictatePanel({
           </motion.div>
         )}
 
-        {appState === "idle" && errorMsg && <Alert tone="warning">{errorMsg}</Alert>}
-        {(appState === "success" || appState === "copied") && errorMsg && (
-          <Alert tone="warning">{errorMsg}</Alert>
-        )}
-        {appState === "error" && errorMsg && <Alert tone="error">{errorMsg}</Alert>}
       </motion.section>
 
-      {lastPerformance.length > 0 && (
-        <DictationPerformanceCard
-          config={config}
-          performance={lastPerformance}
-        />
+      {errorMsg && (
+        <InlineNotice
+          tone={appState === "error" ? "error" : "warning"}
+          action={
+            messageNeedsSettings ? (
+              <Button size="sm" variant="secondary" onClick={onOpenSettings}>
+                Review
+              </Button>
+            ) : undefined
+          }
+          details={showMessageDetails ? errorMsg : undefined}
+        >
+          {customerMessage}
+        </InlineNotice>
       )}
 
       <AnimatePresence>
@@ -3565,41 +4151,14 @@ function DictatePanel({
         )}
       </AnimatePresence>
 
-      <div className="insights-block">
-        <p className="section-label">Your insights</p>
-        <StatsBentoDashboard stats={stats} />
-      </div>
+      <StatsBentoDashboard stats={stats} />
 
-      <nav className="quick-actions" aria-label="Quick actions">
-        <button className="quick-tile" type="button" onClick={onOpenNotepad}>
-          <span className="quick-tile__icon">
-            <FileText size={18} />
-          </span>
-          <span className="quick-tile__title">Notepad</span>
-          <span className="quick-tile__desc">Dictate into a longform note</span>
-        </button>
-        <button className="quick-tile" type="button" onClick={onOpenHistory}>
-          <span className="quick-tile__icon">
-            <History size={18} />
-          </span>
-          <span className="quick-tile__title">History</span>
-          <span className="quick-tile__desc">Revisit and copy past transcripts</span>
-        </button>
-        <button className="quick-tile" type="button" onClick={() => void onRefresh()}>
-          <span className="quick-tile__icon">
-            <RefreshCw size={18} />
-          </span>
-          <span className="quick-tile__title">Check setup</span>
-          <span className="quick-tile__desc">Re-run readiness checks</span>
-        </button>
-        <button className="quick-tile" type="button" onClick={onOpenSettings}>
-          <span className="quick-tile__icon">
-            <SettingsIcon size={18} />
-          </span>
-          <span className="quick-tile__title">Settings</span>
-          <span className="quick-tile__desc">Provider, shortcut, and more</span>
-        </button>
-      </nav>
+      {lastPerformance.length > 0 && (
+        <DictationPerformanceCard
+          config={config}
+          performance={lastPerformance}
+        />
+      )}
 
       {needsSetup && setupStatus && (
         <SetupPanel
@@ -3642,18 +4201,11 @@ function DictationPerformanceCard({
     !transcribe.modelCacheHit;
 
   return (
-    <Card className="dictation-performance-card" aria-label="Last dictation performance">
-      <div className="dictation-performance-card__header">
-        <span className="quick-tile__icon">
-          <Gauge size={18} />
-        </span>
-        <div>
-          <strong>Last dictation</strong>
-          <span>{providerLabel}</span>
-        </div>
-        {cacheLabel && <Chip tone={transcribe.modelCacheHit ? "success" : "warning"}>{cacheLabel}</Chip>}
-      </div>
-
+    <Disclosure
+      className="dictation-performance-card"
+      summary="Last dictation details"
+      summaryMeta={[providerLabel, cacheLabel].filter(Boolean).join(" · ")}
+    >
       <div className="dictation-performance-grid">
         <PerformanceMetric label="Total" value={formatDurationMs(transcribe.totalMs)} />
         <PerformanceMetric label="Speech check" value={formatDurationMs(transcribe.speechCheckMs)} />
@@ -3681,8 +4233,8 @@ function DictationPerformanceCard({
           Medium is the heavier local model. The next dictation should skip model load while Echo stays open.
         </Alert>
       )}
-      {transcribe.errorCode && <Alert tone="warning">Last transcription ended with {transcribe.errorCode}.</Alert>}
-    </Card>
+      {transcribe.errorCode && <Alert tone="warning">Error code: {transcribe.errorCode}</Alert>}
+    </Disclosure>
   );
 }
 
@@ -3708,69 +4260,76 @@ function StateGlyph({ state }: { state: AppState }) {
     );
   }
 
-  if (state === "success" || state === "copied") {
-    return (
-      <motion.div
-        className="state-icon state-icon--success"
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-      >
-        <CheckCircle2 />
-      </motion.div>
+  const iconKey = state === "success" || state === "copied" ? "success" : state === "error" ? "error" : "idle";
+  const icon =
+    iconKey === "success" ? (
+      <CheckCircle2 />
+    ) : iconKey === "error" ? (
+      <AlertCircle />
+    ) : (
+      <AudioWaveform />
     );
-  }
-
-  if (state === "error") {
-    return (
-      <motion.div
-        className="state-icon state-icon--error"
-        initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-      >
-        <AlertCircle />
-      </motion.div>
-    );
-  }
+  const className =
+    iconKey === "success"
+      ? "state-icon state-icon--success"
+      : iconKey === "error"
+        ? "state-icon state-icon--error"
+        : "native-state-glyph native-state-glyph--idle";
 
   return (
     <motion.div
-      className="native-state-glyph native-state-glyph--idle"
+      className={className}
       initial={reduceMotion ? { opacity: 0 } : { opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
     >
-      <AudioWaveform />
+      <AnimatedIconSwap iconKey={iconKey}>{icon}</AnimatedIconSwap>
     </motion.div>
   );
 }
 
-function cleanupChipLabel(config?: AppConfig | null): string {
-  if (config?.model_provider === "local") return "Raw local transcript";
-  return config?.cleanup_enabled ? "Groq cleanup on" : "Raw transcript";
+function presentHomeMessage(message: string): string {
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("secure storage returned no key") ||
+    normalized.includes("secure storage did not return the new key") ||
+    normalized.includes("could not verify secure storage")
+  ) {
+    return "Key saved. Secure storage verification is still pending.";
+  }
+
+  if (normalized.includes("no speech")) {
+    return "No speech was detected. Try again and speak a little closer to the microphone.";
+  }
+
+  if (normalized.includes("no target") || normalized.includes("clipboard")) {
+    return "Your dictation was copied. Focus the destination and paste it.";
+  }
+
+  return message.split("CommandOrControl").join("the shortcut");
 }
 
 function stateTitle(state: AppState): string {
   const labels: Record<AppState, string> = {
-    idle: "Ready to dictate",
-    recording: "Recording",
-    processing: "Processing",
+    idle: "Ready",
+    recording: "Listening",
+    processing: "Transcribing",
     success: "Pasted",
-    copied: "Copied to clipboard",
+    copied: "Copied",
     error: "Needs attention",
   };
   return labels[state];
 }
 
-function stateHint(state: AppState, shortcut = "Command + D", errorMsg = ""): string {
+function stateHint(state: AppState, _shortcut = "Command + D", errorMsg = ""): string {
   const labels: Record<AppState, string> = {
-    idle: `Press ${shortcut} anywhere to start dictating`,
+    idle: "Press the shortcut anywhere to dictate",
     recording: "Release the shortcut to stop",
-    processing: "Transcribing and polishing your text",
-    success: "Inserted into the target app",
-    copied: errorMsg || "Focus your target app and press Cmd/Ctrl+V to paste",
-    error: "Review the message below, then try again",
+    processing: "Turning speech into text",
+    success: "Inserted in the active app",
+    copied: presentHomeMessage(errorMsg || "Focus the destination and paste"),
+    error: "Review the message below and try again",
   };
   return labels[state];
 }
@@ -3789,76 +4348,45 @@ function SetupPanel({
   onRefresh: () => Promise<SetupStatus | null>;
 }) {
   const blockers = status.checks.filter((check) => check.status !== "ok");
-  const reduceMotion = useReducedMotion() ?? false;
+  const firstBlocker = blockers[0];
+  if (!firstBlocker) return null;
+
+  const firstMessage =
+    firstBlocker.id === "shortcut" && shortcutError ? shortcutError : firstBlocker.message;
+  const handleFix = () => {
+    if (firstBlocker.action_label) {
+      onAction(firstBlocker);
+      return;
+    }
+    onOpenSettings();
+  };
 
   return (
-    <Card className={`setup-panel${status.ready ? " setup-panel--ready" : ""}`} aria-label="Setup status">
-      <div className="setup-panel__header">
-        <div>
-          <Chip tone={status.ready ? "success" : "warning"}>
-            {status.ready ? "Ready" : "Needs setup"}
-          </Chip>
-          <h3>{status.ready ? "Setup complete" : "Finish setup before dictating"}</h3>
-        </div>
-        <IconButton label="Refresh setup checks" onClick={() => void onRefresh()}>
-          <RefreshCw size={16} />
-        </IconButton>
-      </div>
-
-      <div className="readiness-strip" aria-label="Readiness checks">
-        {status.checks.map((check) => {
-          const tone = check.id === "paste" ? "info" : check.status;
-          return (
-          <motion.button
-            className={`readiness-pill readiness-pill--${tone}`}
-            key={check.id}
-            onClick={() => check.status !== "ok" && onAction(check)}
-            type="button"
-            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-            whileHover={reduceMotion ? undefined : { y: -1 }}
-            whileTap={reduceMotion ? undefined : { scale: 0.98 }}
-          >
-            <CircleDot size={12} />
-            <span>{check.label}</span>
-          </motion.button>
-          );
-        })}
-      </div>
-
-      <div className="setup-list">
-        {blockers.map((check) => {
-          const tone = check.id === "paste" ? "info" : check.status;
-          return (
-          <motion.div
-            key={check.id}
-            className={`setup-check setup-check--${tone}`}
-            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
-          >
-            <CircleDot className="setup-dot" size={16} />
-            <div>
+    <InlineNotice
+      className="setup-panel"
+      tone="warning"
+      action={
+        <Button size="sm" variant="secondary" onClick={handleFix}>
+          Fix setup
+        </Button>
+      }
+      details={
+        <div className="setup-panel__details">
+          {blockers.map((check) => (
+            <div key={check.id}>
               <strong>{check.label}</strong>
               <span>{check.id === "shortcut" && shortcutError ? shortcutError : check.message}</span>
             </div>
-            {check.action_label && (
-              <Button size="sm" variant="secondary" onClick={() => onAction(check)}>
-                {check.action_label}
-              </Button>
-            )}
-          </motion.div>
-          );
-        })}
-      </div>
-
-      {!status.ready && (
-        <Button fullWidth variant="primary" onClick={onOpenSettings}>
-          Review settings
-        </Button>
-      )}
-    </Card>
+          ))}
+          <Button size="sm" variant="ghost" onClick={() => void onRefresh()}>
+            Refresh checks
+          </Button>
+        </div>
+      }
+      aria-label="Setup status"
+    >
+      <strong>{firstBlocker.label} needs attention.</strong> {firstMessage}
+    </InlineNotice>
   );
 }
 
@@ -3898,6 +4426,22 @@ function NotepadPanel() {
   const [dictationState, setDictationState] = useState<NotepadDictationState>("idle");
 
   const selectedNote = selectedId ? notes.find((note) => note.id === selectedId) ?? null : null;
+  const saveStatusLabel =
+    saveState === "saving"
+      ? "Saving note"
+      : saveState === "saved"
+        ? "Note saved"
+        : saveState === "error"
+          ? "Note save failed"
+          : "";
+
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    return listenSafely<string>("entitlement-offline-fallback", (event) => {
+      setError(event.payload || ONLINE_PRO_REQUIRED_MESSAGE);
+    });
+  }, []);
+
   const filteredNotes = notes.filter((note) => {
     const needle = query.trim().toLowerCase();
     if (!needle) return true;
@@ -4182,22 +4726,16 @@ function NotepadPanel() {
     }
   };
 
-  const saveLabel =
-    saveState === "saving"
-      ? "Saving..."
-      : saveState === "saved"
-        ? "Saved locally"
-        : saveState === "error"
-          ? "Save failed"
-          : "Local notes";
-
   return (
     <div className="notepad-panel">
       <div className="page-heading page-heading--split">
         <div>
-          <p>Notepad</p>
-          <h2>Notes and drafts</h2>
-          <span>{saveLabel}</span>
+          <h2>Notepad</h2>
+          {saveStatusLabel && (
+            <span className="visually-hidden" role="status">
+              {saveStatusLabel}
+            </span>
+          )}
         </div>
         <button
           className="notepad-new-note-button"
@@ -4206,7 +4744,7 @@ function NotepadPanel() {
           title="New note"
           onClick={handleCreateNote}
         >
-          <Plus size={22} strokeWidth={2.4} />
+          <Plus size={22} />
         </button>
       </div>
 
@@ -4274,13 +4812,18 @@ function NotepadPanel() {
                     }
                     disabled={dictationState === "processing"}
                   >
-                    {dictationState === "recording" ? <Square size={14} /> : <Mic size={15} />}
+                    <AnimatedIconSwap iconKey={dictationState === "recording" ? "stop" : "mic"}>
+                      {dictationState === "recording" ? <Square size={14} /> : <Mic size={15} />}
+                    </AnimatedIconSwap>
                   </IconButton>
                   <IconButton
+                    className={copiedNoteId === selectedNote.id ? "notepad-copy-button is-copied" : "notepad-copy-button"}
                     label={copiedNoteId === selectedNote.id ? "Copied" : "Copy note"}
                     onClick={() => void handleCopyNote(selectedNote)}
                   >
-                    <Copy size={14} />
+                    <AnimatedIconSwap iconKey={copiedNoteId === selectedNote.id ? "copied" : "copy"}>
+                      {copiedNoteId === selectedNote.id ? <Check size={14} /> : <Copy size={14} />}
+                    </AnimatedIconSwap>
                   </IconButton>
                   <IconButton
                     label="Delete note"
@@ -4319,7 +4862,7 @@ function NotepadPanel() {
                 title="New note"
                 onClick={handleCreateNote}
               >
-                <Plus size={22} strokeWidth={2.4} />
+                <Plus size={22} />
               </button>
             </div>
           )}
@@ -4380,8 +4923,7 @@ function HistoryPanel({
     <div className="history-panel">
       <div className="page-heading page-heading--split">
         <div>
-          <p>Local history</p>
-          <h2>Recent dictations</h2>
+          <h2>Recent Dictations</h2>
           <span>Saved transcripts stay on this device.</span>
         </div>
         {history.length > 0 && (
@@ -4467,7 +5009,9 @@ function HistoryPanel({
                         label={copiedId === item.id ? "Copied" : "Copy transcript"}
                         onClick={() => onCopy(item.text, item.id)}
                       >
-                        <Copy size={14} />
+                        <AnimatedIconSwap iconKey={copiedId === item.id ? "copied" : "copy"}>
+                          {copiedId === item.id ? <Check size={14} /> : <Copy size={14} />}
+                        </AnimatedIconSwap>
                       </IconButton>
                       <IconButton
                         label={`Delete transcript from ${formatDate(item.created_at)}`}
@@ -4503,6 +5047,13 @@ function StandaloneNotepadWindow() {
     MOCK_CONFIG.appearance_theme
   );
   const resolvedTheme = useResolvedTheme(appearanceTheme);
+
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    return listenSafely<string>("entitlement-offline-fallback", (event) => {
+      setError(event.payload || ONLINE_PRO_REQUIRED_MESSAGE);
+    });
+  }, []);
 
   const updateNote = useCallback((changes: Partial<NotepadNote>) => {
     setNote((current) => (current ? { ...current, ...changes } : current));
@@ -4855,10 +5406,18 @@ function StandaloneNotepadWindow() {
                 }
                 disabled={dictationState === "processing"}
               >
-                {dictationState === "recording" ? <Square size={19} /> : <Mic size={21} />}
+                <AnimatedIconSwap iconKey={dictationState === "recording" ? "stop" : "mic"}>
+                  {dictationState === "recording" ? <Square size={19} /> : <Mic size={21} />}
+                </AnimatedIconSwap>
               </IconButton>
-              <IconButton label={copied ? "Copied" : "Copy note"} onClick={() => void handleCopy()}>
-                <Copy size={20} />
+              <IconButton
+                className={copied ? "notepad-copy-button is-copied" : "notepad-copy-button"}
+                label={copied ? "Copied" : "Copy note"}
+                onClick={() => void handleCopy()}
+              >
+                <AnimatedIconSwap iconKey={copied ? "copied" : "copy"}>
+                  {copied ? <Check size={20} /> : <Copy size={20} />}
+                </AnimatedIconSwap>
               </IconButton>
               <IconButton label="Delete note" tone="danger" onClick={() => void handleDelete()}>
                 <Trash2 size={21} />

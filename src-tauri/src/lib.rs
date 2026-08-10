@@ -2,6 +2,7 @@ mod app_error;
 mod audio;
 mod config;
 mod diagnostics;
+mod entitlement;
 mod focus;
 mod groq;
 mod history;
@@ -945,6 +946,21 @@ fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppErr
             Some("Open Settings"),
         ));
     }
+    if cfg.model_provider == "api" && !entitlement::active_status().features.cloud_provider {
+        if model_download::is_model_available(&cfg.local_model_size) {
+            let _ = app.emit(
+                "entitlement-offline-fallback",
+                "No internet connection. Echo is using local transcription until Pro can be verified.",
+            );
+        } else {
+            return Err(AppError::new(
+                "pro_verification_offline",
+                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline.",
+                false,
+                Some("Open Settings"),
+            ));
+        }
+    }
     let live_chunk_sender = start_live_transcription_session(app.clone(), state, &cfg);
     let mut recorder = state
         .recorder
@@ -1327,6 +1343,11 @@ fn save_config(
     state: tauri::State<'_, AppState>,
     config: AppConfig,
 ) -> Result<ConfigSaveResult, ConfigSaveError> {
+    if config.model_provider == "api" && !entitlement::active_status().features.cloud_provider {
+        return Err(ConfigSaveError::paywall_required(
+            "Unlock Echo Pro to save cloud transcription settings.",
+        ));
+    }
     let save_result = config.save_with_status()?;
     if let Ok(mut cached_config) = state.config.lock() {
         *cached_config = save_result.config.clone();
@@ -1352,6 +1373,14 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
 
 #[tauri::command]
 async fn test_groq_connection(config: Option<AppConfig>) -> Result<GroqReadiness, GroqApiError> {
+    if !entitlement::active_status().features.cloud_provider {
+        return Err(GroqApiError {
+            status: None,
+            code: "paywall_required".to_string(),
+            message: "Unlock Echo Pro to test cloud transcription.".to_string(),
+            retryable: false,
+        });
+    }
     let cfg = match config {
         Some(mut cfg) => {
             if cfg.groq_api_key.trim().is_empty() {
@@ -1381,6 +1410,15 @@ async fn test_groq_connection(config: Option<AppConfig>) -> Result<GroqReadiness
 #[tauri::command]
 fn get_setup_status() -> setup::SetupStatus {
     match AppConfig::try_load() {
+        Ok(cfg)
+            if cfg.model_provider == "api"
+                && !entitlement::active_status().features.cloud_provider =>
+        {
+            setup::get_status_with_provider_error(
+                &cfg,
+                "Unlock Echo Pro to use cloud transcription, or switch to a local Whisper model.",
+            )
+        }
         Ok(cfg) => setup::get_status(&cfg),
         Err(e) => {
             eprintln!("Setup status config load failed: {e}");
@@ -1790,6 +1828,91 @@ fn get_recording_level(state: tauri::State<'_, AppState>) -> f32 {
     state.recording_level.take()
 }
 
+async fn transcribe_local_for_run(
+    app: &tauri::AppHandle,
+    cfg: &AppConfig,
+    path: &std::path::Path,
+    provider: &str,
+    total_start: Instant,
+    audio_duration_ms: Option<u64>,
+    audio_bytes: Option<u64>,
+    speech_check_ms: u64,
+    has_speech: bool,
+) -> Result<String, AppError> {
+    let model_size = cfg.local_model_size.clone();
+    let requested_threads = cfg.local_transcription_threads;
+    let local_path = path.to_path_buf();
+    let local_result = tokio::task::spawn_blocking(move || {
+        whisper::transcribe_local_with_metrics(&local_path, &model_size, requested_threads)
+    })
+    .await
+    .map_err(|e| {
+        AppError::new(
+            "local_transcription_failed",
+            format!("Task error: {e}"),
+            true,
+            None,
+        )
+    })?;
+
+    match local_result {
+        Ok(local) => {
+            let _ = app.emit(
+                "dictation-performance",
+                DictationPerformancePayload {
+                    phase: "transcribe".to_string(),
+                    provider: provider.to_string(),
+                    model: None,
+                    local_model_size: Some(local.metrics.model_size.clone()),
+                    audio_duration_ms,
+                    audio_bytes,
+                    speech_check_ms: Some(speech_check_ms),
+                    speech_detected: Some(has_speech),
+                    model_cache_hit: Some(local.metrics.model_cache_hit),
+                    model_load_ms: Some(local.metrics.model_load_ms),
+                    audio_decode_ms: Some(local.metrics.audio_decode_ms),
+                    inference_ms: Some(local.metrics.inference_ms),
+                    cloud_transcribe_ms: None,
+                    cleanup_ms: None,
+                    paste_ms: None,
+                    total_ms: elapsed_ms(total_start),
+                    thread_count: Some(local.metrics.thread_count),
+                    error_code: None,
+                },
+            );
+            Ok(local.text)
+        }
+        Err(error) => {
+            let _ = app.emit(
+                "dictation-performance",
+                DictationPerformancePayload {
+                    phase: "transcribe".to_string(),
+                    provider: provider.to_string(),
+                    model: None,
+                    local_model_size: Some(cfg.local_model_size.clone()),
+                    audio_duration_ms,
+                    audio_bytes,
+                    speech_check_ms: Some(speech_check_ms),
+                    speech_detected: Some(has_speech),
+                    model_cache_hit: None,
+                    model_load_ms: None,
+                    audio_decode_ms: None,
+                    inference_ms: None,
+                    cloud_transcribe_ms: None,
+                    cleanup_ms: None,
+                    paste_ms: None,
+                    total_ms: elapsed_ms(total_start),
+                    thread_count: Some(whisper::local_thread_count(
+                        cfg.local_transcription_threads,
+                    )),
+                    error_code: Some(error.code.clone()),
+                },
+            );
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command]
 async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<String, AppError> {
     let total_start = Instant::now();
@@ -1827,80 +1950,39 @@ async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<S
         })?;
     let speech_check_ms = elapsed_ms(speech_start);
 
-    let result = match cfg.model_provider.as_str() {
-        "local" => {
-            let model_size = cfg.local_model_size.clone();
-            let requested_threads = cfg.local_transcription_threads;
-            let local_path = path.clone();
-            let local_result = tokio::task::spawn_blocking(move || {
-                whisper::transcribe_local_with_metrics(&local_path, &model_size, requested_threads)
-            })
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    "local_transcription_failed",
-                    format!("Task error: {e}"),
-                    true,
-                    None,
-                )
-            })?;
+    let mut provider_for_run = cfg.model_provider.clone();
+    if cfg.model_provider == "api" && !entitlement::active_status().features.cloud_provider {
+        if model_download::is_model_available(&cfg.local_model_size) {
+            provider_for_run = "local_fallback".to_string();
+            let _ = app.emit(
+                "entitlement-offline-fallback",
+                "No internet connection. Echo is using local transcription until Pro can be verified.",
+            );
+        } else {
+            cleanup_recording_file(&path);
+            return Err(AppError::new(
+                "pro_verification_offline",
+                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline.",
+                false,
+                Some("Open Settings"),
+            ));
+        }
+    }
 
-            match local_result {
-                Ok(local) => {
-                    let _ = app.emit(
-                        "dictation-performance",
-                        DictationPerformancePayload {
-                            phase: "transcribe".to_string(),
-                            provider: "local".to_string(),
-                            model: None,
-                            local_model_size: Some(local.metrics.model_size.clone()),
-                            audio_duration_ms,
-                            audio_bytes,
-                            speech_check_ms: Some(speech_check_ms),
-                            speech_detected: Some(has_speech),
-                            model_cache_hit: Some(local.metrics.model_cache_hit),
-                            model_load_ms: Some(local.metrics.model_load_ms),
-                            audio_decode_ms: Some(local.metrics.audio_decode_ms),
-                            inference_ms: Some(local.metrics.inference_ms),
-                            cloud_transcribe_ms: None,
-                            cleanup_ms: None,
-                            paste_ms: None,
-                            total_ms: elapsed_ms(total_start),
-                            thread_count: Some(local.metrics.thread_count),
-                            error_code: None,
-                        },
-                    );
-                    Ok(local.text)
-                }
-                Err(error) => {
-                    let _ = app.emit(
-                        "dictation-performance",
-                        DictationPerformancePayload {
-                            phase: "transcribe".to_string(),
-                            provider: "local".to_string(),
-                            model: None,
-                            local_model_size: Some(cfg.local_model_size.clone()),
-                            audio_duration_ms,
-                            audio_bytes,
-                            speech_check_ms: Some(speech_check_ms),
-                            speech_detected: Some(has_speech),
-                            model_cache_hit: None,
-                            model_load_ms: None,
-                            audio_decode_ms: None,
-                            inference_ms: None,
-                            cloud_transcribe_ms: None,
-                            cleanup_ms: None,
-                            paste_ms: None,
-                            total_ms: elapsed_ms(total_start),
-                            thread_count: Some(whisper::local_thread_count(
-                                cfg.local_transcription_threads,
-                            )),
-                            error_code: Some(error.code.clone()),
-                        },
-                    );
-                    Err(error)
-                }
-            }
+    let result = match provider_for_run.as_str() {
+        "local" | "local_fallback" => {
+            transcribe_local_for_run(
+                &app,
+                &cfg,
+                &path,
+                &provider_for_run,
+                total_start,
+                audio_duration_ms,
+                audio_bytes,
+                speech_check_ms,
+                has_speech,
+            )
+            .await
         }
         _ => {
             if cfg.groq_api_key.is_empty() {
@@ -1940,7 +2022,30 @@ async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<S
                         error_code: cloud_result.as_ref().err().map(|error| error.code.clone()),
                     },
                 );
-                cloud_result
+                match cloud_result {
+                    Err(error)
+                        if error.code == "network_error"
+                            && model_download::is_model_available(&cfg.local_model_size) =>
+                    {
+                        let _ = app.emit(
+                            "entitlement-offline-fallback",
+                            "No internet connection. Echo is using local transcription until Pro can be verified.",
+                        );
+                        transcribe_local_for_run(
+                            &app,
+                            &cfg,
+                            &path,
+                            "local_fallback",
+                            total_start,
+                            audio_duration_ms,
+                            audio_bytes,
+                            speech_check_ms,
+                            has_speech,
+                        )
+                        .await
+                    }
+                    other => other,
+                }
             }
         }
     };
@@ -1953,6 +2058,7 @@ async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<S
 async fn cleanup_text(app: tauri::AppHandle, text: String) -> Result<String, String> {
     let start = Instant::now();
     let cfg = AppConfig::try_load()?;
+    entitlement::require_cloud_provider()?;
     if cfg.groq_api_key.is_empty() {
         return Err("Groq API key not configured".to_string());
     }
@@ -2231,7 +2337,26 @@ fn add_transcript_history(
     if !cfg.history_enabled {
         return Err("History is disabled".to_string());
     }
-    history::add(&text, &paste_result, cfg.history_limit)
+    let limit = entitlement::history_limit().map(|free_limit| cfg.history_limit.min(free_limit));
+    history::add(&text, &paste_result, limit)
+}
+
+#[tauri::command]
+fn get_effective_entitlement(user_id: Option<String>) -> entitlement::EntitlementStatus {
+    entitlement::status_for_user(user_id.as_deref())
+}
+
+#[tauri::command]
+fn cache_entitlement(
+    cache: entitlement::EntitlementCache,
+) -> Result<entitlement::EntitlementStatus, String> {
+    entitlement::cache_status(cache.clone())?;
+    Ok(entitlement::status_for_user(Some(&cache.user_id)))
+}
+
+#[tauri::command]
+fn clear_active_entitlement_user() {
+    entitlement::clear_active_user();
 }
 
 #[tauri::command]
@@ -2596,7 +2721,9 @@ pub fn run() {
                 ],
             )?;
 
-            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+            // Use a Retina-resolution template source because tray-icon displays
+            // the NSImage at 18 points on macOS.
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon-sharp@2x.png"))?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
@@ -2684,6 +2811,9 @@ pub fn run() {
             copy_transcript,
             delete_transcript_history,
             clear_transcript_history,
+            get_effective_entitlement,
+            cache_entitlement,
+            clear_active_entitlement_user,
             get_dictation_stats,
             clear_dictation_stats,
             get_support_diagnostics,
