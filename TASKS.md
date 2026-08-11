@@ -11,7 +11,7 @@
 - [x] Add setup/status UI for provider, model, mic, shortcut, and paste readiness.
 - [x] Add Stripe lifetime-unlock foundation: Supabase billing tables, Checkout Session Edge Function, entitlement Edge Function, signed webhook grant path, and JWT/service-role boundaries.
 - [x] Add online-required Echo Pro entitlement verification with account-scoped session lease and native enforcement for cloud/Groq and unlimited-history access.
-- [x] Move Groq API key save/load behind OS secure storage while keeping config backwards compatible.
+- [x] Move Groq API key and auth-session persistence behind native macOS/Windows secure storage, verify auth writes before discarding legacy storage, and keep config backwards compatible.
 - [x] Harden Groq runtime integration with connection testing, typed API errors, upload preflight, and cleanup fallback.
 - [x] Add shortcut validation, registration error UI, and retry guidance.
 - [x] Add an F1-F24 shortcut picker with macOS Fn/Globe guidance and native validation coverage.
@@ -27,7 +27,7 @@
 - [x] Add auth loading, success, cancellation, network failure, invalid credentials, existing email, weak password, and unverified email UI states.
 - [x] Add password reset entry point and recovery copy, even if full reset completion is deferred to Supabase-hosted email links.
 - [x] Add a streamlined three-step first-run onboarding flow: branded welcome, microphone plus paste permissions, and hotkey dictation test.
-- [x] Keep provider/model setup in Settings while onboarding surfaces a clear Settings next step when transcription readiness is missing.
+- [x] Keep full provider/model setup in Settings while allowing entitled Cloud users to verify and save a Groq API key inline during onboarding.
 - [x] Add microphone setup with device selection, permission guidance, live mic test, and a clear success/failure state.
 - [x] Add hotkey capture and validation in onboarding while testing the default Command/Control+D shortcut through the actual global shortcut path.
 - [x] Add macOS paste-permission onboarding for Accessibility, including System Settings deep link, trusted/untrusted status, and clipboard-copy fallback explanation.
@@ -88,8 +88,8 @@
 
 - Authentication: Google OAuth first run and returning login, OAuth cancellation, email/password sign-up, existing-email handling, invalid login, unverified email, password reset entry point, logout, session restore after app restart, offline launch with existing session, and signed-out relaunch.
 - Billing/paywall: free user sees Cloud and unlimited-history paywalls, checkout cancel leaves user free, Stripe test checkout returns through deep link or polling and unlocks Echo Pro, restore purchase refreshes Pro, lost connectivity relocks Pro features until Supabase verification returns, cloud mode temporarily falls back to local Whisper when a downloaded model is available, no-local-model offline state gives a reconnect/download next step, logout/login does not leak entitlement between accounts, and Groq API keys never appear in config, diagnostics, Supabase, or Stripe metadata.
-- Onboarding: fresh installs, returning users with existing config, denied permissions, skip path, missing provider setup handoff, hotkey test failure, and Windows first run.
-- macOS first run: provider setup handoff, mic denied/regranted, Accessibility denied/regranted, shortcut conflict, paste fallback, hidden window, tray/menu bar, dock indicator.
+- Onboarding: fresh installs, returning users with existing config, denied permissions, skip path, inline Groq key success/failure, On-device setup handoff, hotkey test failure, and Windows first run.
+- macOS first run: inline Groq key persistence across relaunch, On-device setup handoff, mic denied/regranted, Accessibility denied/regranted, shortcut conflict, paste fallback, hidden window, tray/menu bar, dock indicator.
 - Visual (custom Echo UI): dark/light/system themes, persistent compact sidebar, task-first Home, collapsed/expanded Insights, conditional setup and diagnostics, progressive grouped Settings, pristine/dirty action bar states, Dynamic Island HUD states, grouped History rows, local Notepad editor, and reduced motion.
 - Responsive UI: verify Home and all Settings tabs at normal desktop width and compact widths around 900px, 740px, and 520px without hidden actions, clipped controls, or horizontal scrolling.
 - Local transcription performance: first local dictation after launch may load the model, second dictation should report a model-cache hit, Balanced Auto should avoid saturating all CPU cores, and temp WAV recordings should not accumulate after completion or expected errors.

@@ -2723,7 +2723,7 @@ pub fn run() {
 
             // Use a Retina-resolution template source because tray-icon displays
             // the NSImage at 18 points on macOS.
-            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon-sharp@2x.png"))?;
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-icon@2x.png"))?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)

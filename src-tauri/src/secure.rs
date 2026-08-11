@@ -177,16 +177,43 @@ pub fn get_auth_storage(key: &str) -> Result<Option<String>, String> {
     }
 }
 
+fn write_and_verify_auth_storage(
+    value: &str,
+    write: impl FnOnce(&str) -> Result<(), String>,
+    read: impl FnOnce() -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    write(value)?;
+
+    match read() {
+        Ok(Some(saved)) if saved == value => Ok(()),
+        Ok(Some(_)) => Err(
+            "Auth storage verification failed: secure storage returned a different value"
+                .to_string(),
+        ),
+        Ok(None) => {
+            Err("Auth storage verification failed: secure storage returned no value".to_string())
+        }
+        Err(error) => Err(format!("Auth storage verification failed: {error}")),
+    }
+}
+
 pub fn set_auth_storage(key: &str, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return delete_auth_storage(key);
     }
-    auth_entry(key)?.set_password(trimmed).map_err(|e| {
-        let message = format!("Auth storage write error: {e}");
-        eprintln!("{message}");
-        message
-    })
+
+    write_and_verify_auth_storage(
+        trimmed,
+        |stored_value| {
+            auth_entry(key)?.set_password(stored_value).map_err(|e| {
+                let message = format!("Auth storage write error: {e}");
+                eprintln!("{message}");
+                message
+            })
+        },
+        || get_auth_storage(key),
+    )
 }
 
 pub fn delete_auth_storage(key: &str) -> Result<(), String> {
@@ -197,5 +224,62 @@ pub fn delete_auth_storage(key: &str) -> Result<(), String> {
             eprintln!("{message}");
             Err(message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_and_verify_auth_storage;
+
+    #[test]
+    fn auth_storage_write_succeeds_after_matching_verification() {
+        let result = write_and_verify_auth_storage(
+            "stored-session",
+            |_| Ok(()),
+            || Ok(Some("stored-session".to_string())),
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn auth_storage_write_rejects_missing_verification_value() {
+        let error =
+            write_and_verify_auth_storage("stored-session", |_| Ok(()), || Ok(None)).unwrap_err();
+
+        assert!(error.contains("returned no value"));
+    }
+
+    #[test]
+    fn auth_storage_write_rejects_mismatched_verification_value() {
+        let error = write_and_verify_auth_storage(
+            "stored-session",
+            |_| Ok(()),
+            || Ok(Some("different-session".to_string())),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("different value"));
+    }
+
+    #[test]
+    fn auth_storage_write_surfaces_verification_failure() {
+        let error = write_and_verify_auth_storage(
+            "stored-session",
+            |_| Ok(()),
+            || Err("Keychain denied read".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Keychain denied read"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn compiled_credential_store_persists_until_deleted() {
+        use keyring::credential::CredentialPersistence;
+
+        let persistence = keyring::default::default_credential_builder().persistence();
+        assert!(matches!(persistence, CredentialPersistence::UntilDelete));
     }
 }

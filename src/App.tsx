@@ -227,6 +227,13 @@ interface SetupStatus {
   checks: SetupCheck[];
 }
 
+interface GroqReadiness {
+  ok: boolean;
+  message: string;
+  transcription_model_ok: boolean;
+  cleanup_model_ok: boolean;
+}
+
 interface ModelStatus {
   downloaded: boolean;
   downloading: boolean;
@@ -2691,19 +2698,43 @@ function MainApp() {
     setActiveTab("dictate");
   };
 
-  const handleOpenSettingsFromOnboarding = async () => {
-    if (!config) return;
-    if (onboardingCompletionTimerRef.current) {
-      clearTimeout(onboardingCompletionTimerRef.current);
-      onboardingCompletionTimerRef.current = null;
+  const handleVerifyAndSaveOnboardingGroqKey = async (apiKey: string) => {
+    if (!config) {
+      throw new Error("Echo could not load your setup. Try again.");
     }
-    await saveConfig({ ...config, onboarding_completed: true });
-    setOnboardingCompletionVisible(false);
-    setOnboardingFirstDictationPassed(false);
-    setOnboardingDictationState("idle");
-    setOnboardingDictationMessage("");
-    setErrorMsg("");
-    setActiveTab("settings");
+
+    const trimmedKey = apiKey.trim();
+    if (!trimmedKey) {
+      throw new Error("Enter a Groq API key before continuing.");
+    }
+    if (!trimmedKey.startsWith("gsk_")) {
+      throw new Error("Groq API keys usually start with gsk_. Check the key and try again.");
+    }
+
+    const nextConfig: AppConfig = {
+      ...config,
+      groq_api_key: trimmedKey,
+      model_provider: "api",
+    };
+    const readiness = HAS_TAURI
+      ? await invoke<GroqReadiness>("test_groq_connection", { config: nextConfig })
+      : {
+          ok: true,
+          message: "Groq connection looks good in preview mode.",
+          transcription_model_ok: true,
+          cleanup_model_ok: true,
+        };
+
+    if (!readiness.ok) {
+      throw new Error(readiness.message || "Echo could not verify this Groq API key.");
+    }
+
+    const saveResult = await saveConfig(nextConfig);
+    if (saveResult.secure_storage.state !== "verified") {
+      throw new Error(saveResult.secure_storage.message);
+    }
+
+    return readiness.message || "Groq is connected and the API key is stored securely.";
   };
 
   const handleSetupAction = async (check: SetupCheck) => {
@@ -2837,6 +2868,8 @@ function MainApp() {
                 transition={reduceMotion ? { duration: 0 } : PANEL_TRANSITION}
               >
                 <OnboardingPanel
+                  canUseCloud={entitlement.features.cloudProvider}
+                  cloudAccessChecking={entitlementChecking}
                   config={config}
                   errorMsg={errorMsg}
                   platform={platform}
@@ -2847,13 +2880,13 @@ function MainApp() {
                   firstDictationMessage={onboardingDictationMessage}
                   onAction={handleOnboardingSetupAction}
                   onComplete={() => void handleCompleteOnboarding()}
-                  onOpenSettings={() => void handleOpenSettingsFromOnboarding()}
                   onRefresh={loadSetupStatus}
                   onSaveInputDevice={handleSaveOnboardingInputDevice}
                   onSaveShortcut={handleSaveOnboardingShortcut}
                   onSkip={() => void handleSkipOnboarding()}
                   onStartFirstDictation={handleStartOnboardingDictation}
                   onStopFirstDictation={handleStopOnboardingDictation}
+                  onVerifyAndSaveGroqKey={handleVerifyAndSaveOnboardingGroqKey}
                 />
               </motion.div>
             )}
@@ -3522,6 +3555,8 @@ function OnboardingStatusIcon({ status }: { status?: SetupCheck["status"] }) {
 }
 
 function OnboardingPanel({
+  canUseCloud,
+  cloudAccessChecking,
   config,
   errorMsg,
   platform,
@@ -3532,14 +3567,16 @@ function OnboardingPanel({
   firstDictationMessage,
   onAction,
   onComplete,
-  onOpenSettings,
   onRefresh,
   onSaveInputDevice,
   onSaveShortcut,
   onSkip,
   onStartFirstDictation,
   onStopFirstDictation,
+  onVerifyAndSaveGroqKey,
 }: {
+  canUseCloud: boolean;
+  cloudAccessChecking: boolean;
   config: AppConfig;
   errorMsg: string;
   platform: DesktopPlatform;
@@ -3550,13 +3587,13 @@ function OnboardingPanel({
   firstDictationMessage: string;
   onAction: (check: SetupCheck) => void;
   onComplete: () => void;
-  onOpenSettings: () => void;
   onRefresh: () => Promise<SetupStatus | null>;
   onSaveInputDevice: (inputDevice: string | null) => Promise<void>;
   onSaveShortcut: (shortcut: string) => Promise<boolean>;
   onSkip: () => void;
   onStartFirstDictation: () => void;
   onStopFirstDictation: () => void;
+  onVerifyAndSaveGroqKey: (apiKey: string) => Promise<string>;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   type OnboardingStep = "permissions" | "hotkeyTest";
@@ -3573,15 +3610,27 @@ function OnboardingPanel({
   const [micTestState, setMicTestState] = useState<"idle" | "testing" | "success" | "fail">("idle");
   const [micTestMessage, setMicTestMessage] = useState("");
   const [micLevel, setMicLevel] = useState(0);
+  const [groqKey, setGroqKey] = useState(config.groq_api_key);
+  const [groqKeyVisible, setGroqKeyVisible] = useState(false);
+  const [groqSetupState, setGroqSetupState] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [groqSetupMessage, setGroqSetupMessage] = useState("");
   const ready = setupStatus?.ready ?? false;
   const currentStep = steps[currentIndex];
   const providerCheck = setupStatus?.checks.find((check) => check.id === "provider");
   const microphoneCheck = setupStatus?.checks.find((check) => check.id === "microphone");
   const pasteCheck = setupStatus?.checks.find((check) => check.id === "paste");
   const formattedShortcut = formatShortcutForPlatform(config.shortcut, platform);
-  const canFinish = ready && !shortcutError && firstDictationPassed;
+  const groqSetupVisible =
+    config.model_provider === "api" &&
+    canUseCloud &&
+    (providerCheck?.status !== "ok" ||
+      groqSetupState === "testing" ||
+      groqSetupState === "error" ||
+      groqKey.trim() !== config.groq_api_key);
+  const dictationTestReady = ready && !groqSetupVisible;
+  const canFinish = dictationTestReady && !shortcutError && firstDictationPassed;
   const overallStep = (currentIndex + 2) as FirstRunStepNumber;
-  const showSetupBlocker = !ready;
+  const showSetupBlocker = !dictationTestReady;
   const micStatusTone =
     micTestState === "testing"
       ? "info"
@@ -3619,6 +3668,12 @@ function OnboardingPanel({
   useEffect(() => {
     setMicDevice(config.input_device ?? "");
   }, [config.input_device]);
+
+  useEffect(() => {
+    if (config.groq_api_key) {
+      setGroqKey(config.groq_api_key);
+    }
+  }, [config.groq_api_key]);
 
   useEffect(() => {
     if (!HAS_TAURI) {
@@ -3685,6 +3740,32 @@ function OnboardingPanel({
     } catch (e) {
       setMicTestState("fail");
       setMicTestMessage(formatErrorMessage(e));
+    }
+  };
+
+  const handleVerifyGroqKey = async () => {
+    const trimmedKey = groqKey.trim();
+    if (!trimmedKey) {
+      setGroqSetupState("error");
+      setGroqSetupMessage("Enter a Groq API key before continuing.");
+      return;
+    }
+    if (!trimmedKey.startsWith("gsk_")) {
+      setGroqSetupState("error");
+      setGroqSetupMessage("Groq API keys usually start with gsk_. Check the key and try again.");
+      return;
+    }
+
+    setGroqSetupState("testing");
+    setGroqSetupMessage("Checking the key and selected Groq models...");
+    try {
+      const message = await onVerifyAndSaveGroqKey(trimmedKey);
+      setGroqKey(trimmedKey);
+      setGroqSetupState("success");
+      setGroqSetupMessage(message || "Groq is connected and the API key is stored securely.");
+    } catch (error) {
+      setGroqSetupState("error");
+      setGroqSetupMessage(formatErrorMessage(error));
     }
   };
 
@@ -3800,13 +3881,115 @@ function OnboardingPanel({
         <Alert tone={shortcutError ? "error" : shortcutSaving ? "info" : "success"}>
           {shortcutError || shortcutMessage}
         </Alert>
+        {providerCheck && groqSetupVisible && (
+          <div className="onboarding-task-row onboarding-provider-setup">
+            <div className="onboarding-task-row__header">
+              <span
+                aria-hidden
+                className={`onboarding-task-row__icon onboarding-task-row__icon--${
+                  groqSetupState === "error"
+                    ? "error"
+                    : groqSetupState === "success"
+                      ? "success"
+                      : "warning"
+                }`}
+              >
+                <OnboardingStatusIcon
+                  status={
+                    groqSetupState === "success"
+                      ? "ok"
+                      : groqSetupState === "error"
+                        ? "error"
+                        : "warning"
+                  }
+                />
+              </span>
+              <div>
+                <strong>Connect Groq</strong>
+                <p>Paste your API key here so Echo can run the final dictation test.</p>
+              </div>
+            </div>
+            <label className="onboarding-hotkey-field" htmlFor="onboarding-groq-key">
+              <span>Groq API key</span>
+              <span className="auth-password-control">
+                <input
+                  aria-invalid={groqSetupState === "error"}
+                  autoComplete="off"
+                  className={`ui-input${groqSetupState === "error" ? " ui-input--error" : ""}`}
+                  disabled={groqSetupState === "testing"}
+                  id="onboarding-groq-key"
+                  onChange={(event) => {
+                    setGroqKey(event.target.value);
+                    if (groqSetupState !== "testing") {
+                      setGroqSetupState("idle");
+                      setGroqSetupMessage("");
+                    }
+                  }}
+                  placeholder="gsk_..."
+                  spellCheck={false}
+                  type={groqKeyVisible ? "text" : "password"}
+                  value={groqKey}
+                />
+                <button
+                  aria-label={groqKeyVisible ? "Hide Groq API key" : "Show Groq API key"}
+                  className="auth-password-toggle"
+                  onClick={() => setGroqKeyVisible((visible) => !visible)}
+                  type="button"
+                >
+                  <AnimatedIconSwap iconKey={groqKeyVisible ? "visible" : "hidden"}>
+                    {groqKeyVisible ? <EyeOff size={17} /> : <Eye size={17} />}
+                  </AnimatedIconSwap>
+                </button>
+              </span>
+            </label>
+            <p className="onboarding-muted-note onboarding-provider-help">
+              Stored in your operating system’s secure credential store. Get a key at{" "}
+              <a href="https://console.groq.com/keys" rel="noopener noreferrer" target="_blank">
+                console.groq.com/keys
+              </a>
+              .
+            </p>
+            <div className="onboarding-inline-actions">
+              <Button
+                disabled={groqSetupState === "testing"}
+                onClick={() => void handleVerifyGroqKey()}
+                variant="primary"
+              >
+                {groqSetupState === "testing" ? "Verifying..." : "Verify & save"}
+              </Button>
+            </div>
+            {groqSetupMessage && (
+              <Alert
+                tone={
+                  groqSetupState === "success"
+                    ? "success"
+                    : groqSetupState === "error"
+                      ? "error"
+                      : "info"
+                }
+              >
+                {groqSetupMessage}
+              </Alert>
+            )}
+          </div>
+        )}
+        {providerCheck && providerCheck.status !== "ok" &&
+          (config.model_provider !== "api" || !canUseCloud) && (
+            <Alert tone={cloudAccessChecking ? "info" : "warning"}>
+              {cloudAccessChecking
+                ? "Checking your Echo Pro access..."
+                : config.model_provider === "api"
+                  ? "Cloud transcription requires Echo Pro. Skip onboarding, then manage your plan in Settings."
+                  : `${providerCheck.message} Skip onboarding, then finish On-device setup in Settings.`}
+            </Alert>
+          )}
         {firstDictationState === "recording" ? (
           <Button fullWidth icon={<Square size={16} />} onClick={onStopFirstDictation} variant="primary">
             Stop Test
           </Button>
         ) : (
           <Button
-            disabled={!ready || !!shortcutError || firstDictationState === "processing"}
+            disabled={!dictationTestReady || !!shortcutError || firstDictationState === "processing"}
             fullWidth
             icon={<Mic size={16} />}
             onClick={onStartFirstDictation}
@@ -3820,15 +4003,8 @@ function OnboardingPanel({
             {firstDictationMessage}
           </Alert>
         )}
-        {providerCheck && providerCheck.status !== "ok" && (
-          <Alert tone="warning">
-            {providerCheck?.message || "Set up Cloud or Local transcription in Settings before the hotkey test can run."}
-            <div className="onboarding-alert-action">
-              <Button onClick={onOpenSettings} variant="secondary">
-                Open Settings
-              </Button>
-            </div>
-          </Alert>
+        {providerCheck?.status === "ok" && groqSetupState === "success" && (
+          <Alert tone="success">{groqSetupMessage}</Alert>
         )}
         {providerCheck?.status === "ok" && (!ready || shortcutError || !firstDictationPassed) && (
           <Alert tone="warning">

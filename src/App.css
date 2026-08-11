@@ -2553,6 +2553,13 @@ label,
   text-wrap: pretty;
 }
 
+.onboarding-provider-help a {
+  color: inherit;
+  font-weight: 650;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
 .onboarding-hotkey-test {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2592,10 +2599,6 @@ label,
   color: var(--text-soft);
   font-weight: 500;
   line-height: 1.35;
-}
-
-.onboarding-alert-action {
-  margin-top: 10px;
 }
 
 .onboarding-actions {
@@ -2769,6 +2772,10 @@ label,
 .first-run-shell .onboarding-muted-note {
   color: var(--auth-text-soft);
   font-size: 11px;
+}
+
+.first-run-shell .onboarding-provider-help a {
+  color: #d9a5ff;
 }
 
 .first-run-shell .onboarding-task-row__icon {
