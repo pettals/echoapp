@@ -17,7 +17,7 @@
 - [x] Add an F1-F24 shortcut picker with macOS Fn/Globe guidance and native validation coverage.
 - [x] Add macOS permission help for Microphone and Accessibility.
 - [x] Harden paste/focus behavior on macOS across Notes, Safari/Chrome, Slack, Mail, Messages, VS Code, and text fields in unfocused apps.
-- [ ] Verify and fix Windows core loop: shortcut press/release, focus restore, clipboard write, paste simulation, settings, history, installer build.
+- [ ] Verify and fix Windows core loop: shortcut press/release, focus restore, clipboard write, paste simulation, settings, history, installer build. Follow the dependency-ordered colleague/Codex handoff in `docs/WINDOWS_CODEX_TASKS.md`.
 - [x] Complete structured error codes beyond partial Groq/config coverage: missing local model, empty speech, mic unavailable, paste denied, and model download failure.
 
 ## P1: Solid Onboarding Phase
