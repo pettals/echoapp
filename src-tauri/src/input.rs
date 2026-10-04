@@ -1,5 +1,7 @@
-use std::process::Command;
 use std::time::Duration;
+
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 #[cfg(not(target_os = "macos"))]
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
@@ -66,29 +68,8 @@ pub fn write_clipboard(text: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut child = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
-            ])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Set-Clipboard spawn error: {e}"))?;
-
-        use std::io::Write;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| format!("Set-Clipboard write error: {e}"))?;
-            drop(stdin);
-        }
-        let status = child
-            .wait()
-            .map_err(|e| format!("Set-Clipboard wait error: {e}"))?;
-        if !status.success() {
-            return Err(format!("Set-Clipboard failed with status {status}"));
-        }
+        clipboard_win::set_clipboard_string(text)
+            .map_err(|e| format!("Windows clipboard write error: {e}"))?;
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     }

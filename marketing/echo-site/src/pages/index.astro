@@ -1,0 +1,63 @@
+---
+import "../styles/global.css";
+
+const features = [
+  ["01", "Hold the shortcut", "Start dictating from any app with one global shortcut. Echo keeps your focus exactly where you left it."],
+  ["02", "Watch it happen", "The compact HUD shows your target app, waveform, live transcript, and final state while you speak."],
+  ["03", "Paste or copy", "Clean text lands in the app you were using. If paste automation is unavailable, your transcript stays on the clipboard."],
+  ["04", "Stay local", "Download Whisper and dictate on-device, even offline. Your voice does not need to leave your machine."],
+];
+
+const plans = [
+  { name: "Free", eyebrow: "On-device", copy: "A private, capable starting point for everyday dictation.", items: ["On-device Whisper models", "Works offline", "Notepad and dictation insights", "Up to 100 history items"], featured: false },
+  { name: "Echo Pro", eyebrow: "Lifetime unlock", copy: "More polish, more history, and cloud power when you want it.", items: ["Everything in Free", "Cloud dictation with your Groq API key", "Unlimited dictation history", "Advanced cleanup and note workflows"], featured: true },
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#09090b" />
+    <meta name="description" content="Echo turns speech into polished text wherever you work. Private on-device dictation with cloud power when you want it." />
+    <title>Echo — Speak freely. Write everywhere.</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="landing-shell" id="top">
+      <main id="main" class="content">
+        <header class="topbar"><a class="brand" href="#top" aria-label="Echo home"><img src="/assets/echo-logo-mark.png" alt="" /><span>Echo</span></a><nav><a href="#how">How it works</a><a href="#plans">Plans</a><a href="#faq">FAQ</a></nav><a class="topbar-cta" href="#waitlist">Get early access <span>↗</span></a></header>
+
+        <section class="hero reveal" id="how">
+          <div class="hero-copy"><p class="eyebrow"><span></span> Your cursor is the destination</p><h1>Speak freely.<br /><em>Write everywhere.</em></h1><p class="hero-lede">Echo turns natural speech into clean, ready-to-send text — privately, quickly, and wherever your cursor is.</p><div class="hero-actions"><a class="button button-primary" href="#waitlist">Join the waitlist <span>↗</span></a><a class="button button-quiet" href="#plans">Compare Free &amp; Pro</a></div><p class="platform-note"><span>⌘</span> macOS first <i>•</i> Windows next <i>•</i> On-device mode from day one</p></div>
+          <div class="hero-preview" aria-label="Echo Dictate preview"><div class="preview-glow"></div><div class="dictate-card"><div class="card-toolbar"><span class="traffic"><i></i><i></i><i></i></span><span>Dictate</span><small>Ready</small></div><div class="state-row"><span class="state-icon">⌁</span><div><strong>Hold to speak</strong><p>Echo is ready for your next thought.</p></div><kbd>⌘ D</kbd></div><div class="shortcut-line"><span class="shortcut-key">⌘</span><span class="shortcut-key">D</span><span>Release when you’re done.</span></div></div><div class="floating-status floating-status--top"><span></span> Local model active</div><div class="floating-status floating-status--bottom"><span>↗</span> Text lands in place</div></div>
+        </section>
+
+        <section class="signal-row reveal"><span>Private by default</span><i></i><span>Fast enough for thought</span><i></i><span>Made for real life</span></section>
+
+        <section class="section-block reveal"><div class="section-heading"><div><p class="eyebrow">The dictation loop</p><h2>One shortcut.<br /><em>Less friction.</em></h2></div><p>Echo is designed around the moment you already have an idea and do not want to lose it. Hold, speak, release — then keep moving.</p></div><div class="feature-grid">{features.map(([number, title, copy]) => <article class="feature-card"><span class="feature-number">{number}</span><span class="feature-icon" aria-hidden="true">{number === "01" ? "⌁" : number === "02" ? "◌" : number === "03" ? "↗" : "◒"}</span><h3>{title}</h3><p>{copy}</p></article>)}</div></section>
+
+        <section class="app-story reveal"><div class="app-story__media"><img src="/assets/echo-app.webp" alt="Echo desktop workspace with Dictate, Notepad, History, and Settings navigation" loading="lazy" /></div><div class="app-story__copy"><p class="eyebrow">A real desktop utility</p><h2>Quiet when idle.<br /><em>Clear when it matters.</em></h2><p>Use a compact workspace for Dictate, Notepad, History, and Settings. See only the state and action you need now.</p><div class="mini-metrics"><span><strong>69</strong><small>rolling WPM</small></span><span><strong>100+</strong><small>local history items</small></span><span><strong>0</strong><small>cloud required</small></span></div></div></section>
+
+        <section class="hud-story reveal"><div class="hud-story__copy"><p class="eyebrow">Feedback without distraction</p><h2>Your voice,<br /><em>in the moment.</em></h2><p>The Dynamic Island HUD keeps recording visible without stealing the screen. Live transcript, target app, waveform, paste, copy fallback, and error states all have a clear next step.</p><a class="text-link" href="#waitlist">See Echo in action <span>↗</span></a></div><div class="hud-story__media"><img src="/assets/echo-hud.webp" alt="Echo Dynamic Island HUD showing live dictation feedback" loading="lazy" /></div></section>
+
+        <section class="section-block section-block--plans reveal" id="plans"><div class="section-heading"><div><p class="eyebrow">Clear from the start</p><h2>Start free.<br /><em>Go deeper when ready.</em></h2></div><p>No forced cloud trial. No subscription required for private local dictation. Choose how much Echo does for you.</p></div><div class="plan-grid">{plans.map((plan) => <article class:list={["plan-card", { featured: plan.featured }]}><div class="plan-label"><span>{plan.name}</span><small>{plan.eyebrow}</small></div><h3>{plan.featured ? "More control" : "Private by default"}</h3><p>{plan.copy}</p><ul>{plan.items.map((item) => <li><span>✓</span>{item}</li>)}</ul><a class:list={["button", plan.featured ? "button-accent" : "button-quiet"]} href="#waitlist">{plan.featured ? "Get Echo Pro updates" : "Join the waitlist"} <span>↗</span></a></article>)}</div></section>
+
+        <section class="notepad-story reveal" id="notepad"><div class="notepad-window"><div class="notepad-toolbar"><span>Echo / Notepad</span><span>Autosaved</span></div><div class="notepad-body"><small>PRODUCT / IDEA</small><h3>Launch notes</h3><p>“Make the first run feel instant — no account, no cloud, just talk.”</p><div><b>idea</b><b>local</b></div></div></div><div><p class="eyebrow">For thoughts in between</p><h2>Catch the idea<br /><em>before it disappears.</em></h2><p>Keep a local Notepad for sparks, drafts, and rough thinking. Echo Pro adds cleanup and richer note workflows when you want more shape.</p></div></section>
+
+        <section class="waitlist reveal" id="waitlist"><div><p class="eyebrow">Early access</p><h2>Make room<br /><em>for your voice.</em></h2><p>Join the list for the first Echo release, product notes, and early access to Echo Pro.</p></div><form class="waitlist-form"><label for="email">Your email</label><div class="input-row"><input id="email" name="email" type="email" placeholder="you@somewhere.com" required /><button type="submit">Join Echo <span>↗</span></button></div><small>Occasional updates. Unsubscribe anytime.</small><p class="form-success" role="status">You’re on the list. We’ll be in touch.</p></form></section>
+
+        <section class="faq reveal" id="faq"><div><p class="eyebrow">Good questions</p><h2>Built to be<br /><em>understood.</em></h2></div><div class="faq-list"><details open><summary>Does Echo work offline? <span>+</span></summary><p>Yes. The Free plan runs downloaded on-device Whisper models, so dictation can work without a connection.</p></details><details><summary>What does Echo Pro add? <span>+</span></summary><p>Echo Pro adds cloud dictation using your Groq API key, unlimited history, advanced cleanup, and richer note workflows.</p></details><details><summary>Where does my voice go? <span>+</span></summary><p>Local dictation stays on your device. Cloud mode is opt-in and uses the provider you configure.</p></details></div></section>
+      </main>
+    </div>
+
+    <footer class="footer"><a class="brand" href="#top"><img src="/assets/echo-logo-mark.png" alt="" /><span>Echo</span></a><span>Speak freely. Write everywhere.</span><span>© 2026 Pettal Technology</span></footer>
+
+    <script>
+      const observer = new IntersectionObserver((entries) => entries.forEach((entry) => entry.isIntersecting && entry.target.classList.add("is-visible")), { threshold: 0.14 });
+      document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
+      const form = document.querySelector(".waitlist-form");
+      form?.addEventListener("submit", (event) => { event.preventDefault(); form.classList.add("is-submitted"); });
+    </script>
+  </body>
+</html>

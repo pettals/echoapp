@@ -42,8 +42,9 @@ Echo uses the Supabase project `glkriavrwsissibmwxhd` with a publishable key for
 
 Before testing account flows, configure Supabase Auth:
 
-- Add redirect URLs: `echo://auth/callback`, `echo://auth/reset-password`, and `https://pettals.co.uk/echo/auth/callback/`.
-- Upload `public/echo/auth/callback/index.html` to `https://pettals.co.uk/echo/auth/callback/`; Google sign-in returns there first, then opens Echo with `echo://auth/callback`.
+- Add redirect URLs: `echo://auth/callback`, `echo://auth/reset-password`, `https://pettals.co.uk/echo/auth/callback/`, and `https://pettals.co.uk/echo/auth/callback/?flow=reset`.
+- For Windows development, also allow `https://pettals.co.uk/echo/auth/callback/?protocol=echo-dev` and `https://pettals.co.uk/echo/auth/callback/?protocol=echo-dev&flow=reset`.
+- Upload `public/echo/auth/callback/index.html` to `https://pettals.co.uk/echo/auth/callback/`; Google sign-in and password reset return there first, then open Echo with the appropriate `echo://` or `echo-dev://` auth route.
 - Keep Email authentication enabled with email confirmation required.
 - Enable the Google provider.
 - In Google Cloud, configure OAuth consent with `openid`, email, and profile scopes.

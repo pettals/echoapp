@@ -41,6 +41,9 @@ import { getCurrent as getCurrentDeepLinks, onOpenUrl } from "@tauri-apps/plugin
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  DEV_AUTH_BYPASS,
+  DEV_AUTH_USER,
+  AUTH_APP_SCHEME,
   exchangeCodeForSession,
   getFreshSession,
   getSession,
@@ -1497,9 +1500,12 @@ function MainApp() {
         return;
       }
 
-      if (parsed.protocol !== "echo:") return;
+      const isAuthProtocol = parsed.protocol === `${AUTH_APP_SCHEME}:`;
+      const isBillingProtocol = parsed.protocol === "echo:";
+      if (!isAuthProtocol && !isBillingProtocol) return;
 
       if (parsed.hostname === "billing") {
+        if (!isBillingProtocol) return;
         setCheckoutPending(false);
         setActiveTab("settings");
 
@@ -1539,6 +1545,7 @@ function MainApp() {
         return;
       }
 
+      if (!isAuthProtocol) return;
       if (parsed.hostname !== "auth") return;
       const isCallback = parsed.pathname === "/callback";
       const isResetPassword = parsed.pathname === "/reset-password";
@@ -2143,10 +2150,15 @@ function MainApp() {
       } satisfies ConfigSaveResult;
     }
 
-    const launchAtLogin = await invoke<boolean>("set_launch_at_login", {
-      enabled: normalizedConfig.launch_at_login,
-    });
-    normalizedConfig.launch_at_login = launchAtLogin;
+    try {
+      normalizedConfig.launch_at_login = await invoke<boolean>("set_launch_at_login", {
+        enabled: normalizedConfig.launch_at_login,
+      });
+    } catch (e) {
+      // A platform autostart integration failure must not block unrelated
+      // settings, especially completing or skipping first-run setup.
+      console.warn("Could not update launch-at-login:", e);
+    }
 
     const saveResult = await invoke<ConfigSaveResult>("save_config", { config: normalizedConfig });
     const savedConfig = saveResult.config;
@@ -2188,6 +2200,17 @@ function MainApp() {
 
   useEffect(() => {
     let cancelled = false;
+
+    if (DEV_AUTH_BYPASS) {
+      authSessionRef.current = null;
+      setAuthUser(DEV_AUTH_USER);
+      setAuthStatus("signedIn");
+      setAuthMessage("Development sign-in bypass is active.");
+      return () => {
+        cancelled = true;
+      };
+    }
+
     restorePersistedSession()
       .then((session) => {
         if (cancelled) return;
@@ -2235,6 +2258,12 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (DEV_AUTH_BYPASS) {
+      setEntitlement(FREE_ENTITLEMENT);
+      setEntitlementMessage("Development sign-in bypass is active; cloud entitlement checks are disabled.");
+      setEntitlementChecking(false);
+      return;
+    }
     if (authStatus === "signedIn" && authUser?.id) {
       void refreshEntitlement(authUser.id);
       return;
@@ -2662,25 +2691,29 @@ function MainApp() {
 
   const handleCompleteOnboarding = async () => {
     if (!config) return;
-    const latestStatus = await loadSetupStatus();
-    const canComplete = latestStatus?.ready && !shortcutError && onboardingFirstDictationPassed;
+    await loadSetupStatus();
+    const canComplete = !shortcutError && onboardingFirstDictationPassed;
     if (!canComplete) {
       setErrorMsg("Finish permissions and pass the hotkey test before leaving onboarding.");
       return;
     }
-    await saveConfig({ ...config, onboarding_completed: true });
-    setOnboardingCompletionVisible(true);
-    if (onboardingCompletionTimerRef.current) {
-      clearTimeout(onboardingCompletionTimerRef.current);
+    try {
+      await saveConfig({ ...config, onboarding_completed: true });
+      setOnboardingCompletionVisible(true);
+      if (onboardingCompletionTimerRef.current) {
+        clearTimeout(onboardingCompletionTimerRef.current);
+      }
+      onboardingCompletionTimerRef.current = setTimeout(
+        () => {
+          setActiveTab("dictate");
+          setOnboardingCompletionVisible(false);
+          onboardingCompletionTimerRef.current = null;
+        },
+        reduceMotion ? 400 : 1200
+      );
+    } catch (e) {
+      setErrorMsg(`Could not finish onboarding. ${formatErrorMessage(e)}`);
     }
-    onboardingCompletionTimerRef.current = setTimeout(
-      () => {
-        setActiveTab("dictate");
-        setOnboardingCompletionVisible(false);
-        onboardingCompletionTimerRef.current = null;
-      },
-      reduceMotion ? 400 : 1200
-    );
   };
 
   const handleSkipOnboarding = async () => {
@@ -2689,13 +2722,21 @@ function MainApp() {
       clearTimeout(onboardingCompletionTimerRef.current);
       onboardingCompletionTimerRef.current = null;
     }
-    await saveConfig({ ...config, onboarding_completed: true });
-    setOnboardingCompletionVisible(false);
-    setOnboardingFirstDictationPassed(false);
-    setOnboardingDictationState("idle");
-    setOnboardingDictationMessage("");
-    setErrorMsg("");
-    setActiveTab("dictate");
+    const nextConfig =
+      config.model_provider === "api" && !entitlement.features.cloudProvider
+        ? { ...config, model_provider: "local" as const, groq_api_key: "", onboarding_completed: true }
+        : { ...config, onboarding_completed: true };
+    try {
+      await saveConfig(nextConfig);
+      setOnboardingCompletionVisible(false);
+      setOnboardingFirstDictationPassed(false);
+      setOnboardingDictationState("idle");
+      setOnboardingDictationMessage("");
+      setErrorMsg("");
+      setActiveTab("dictate");
+    } catch (e) {
+      setErrorMsg(`Could not skip onboarding. ${formatErrorMessage(e)}`);
+    }
   };
 
   const handleVerifyAndSaveOnboardingGroqKey = async (apiKey: string) => {
@@ -3628,7 +3669,10 @@ function OnboardingPanel({
       groqSetupState === "error" ||
       groqKey.trim() !== config.groq_api_key);
   const dictationTestReady = ready && !groqSetupVisible;
-  const canFinish = dictationTestReady && !shortcutError && firstDictationPassed;
+  // A passed end-to-end dictation test is the strongest readiness signal. The
+  // aggregate setup check can still be stale (or report a non-blocking Windows
+  // clipboard warning), so it must not keep Finish disabled after success.
+  const canFinish = !shortcutError && firstDictationPassed;
   const overallStep = (currentIndex + 2) as FirstRunStepNumber;
   const showSetupBlocker = !dictationTestReady;
   const micStatusTone =

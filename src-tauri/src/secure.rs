@@ -4,6 +4,10 @@ const SERVICE: &str = "com.andrewjohn.echo";
 const GROQ_ACCOUNT: &str = "groq-api-key";
 const ENTITLEMENT_ACCOUNT: &str = "entitlement-cache";
 const AUTH_ACCOUNT_PREFIX: &str = "supabase-auth:";
+#[cfg(target_os = "windows")]
+const AUTH_CHUNK_MARKER_PREFIX: &str = "echo-auth-chunk-v1:";
+#[cfg(target_os = "windows")]
+const AUTH_CHUNK_UTF16_LIMIT: usize = 2000;
 
 static GROQ_API_KEY_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_ENTITLEMENT_USER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -48,6 +52,49 @@ fn auth_entry(key: &str) -> Result<keyring::Entry, String> {
     }
     keyring::Entry::new(SERVICE, &format!("{AUTH_ACCOUNT_PREFIX}{trimmed}"))
         .map_err(|e| format!("Credential store error: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn auth_part_entry(key: &str, part: usize) -> Result<keyring::Entry, String> {
+    auth_entry(&format!("{key}:part:{part}"))
+}
+
+#[cfg(target_os = "windows")]
+fn split_auth_value(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_units = 0;
+
+    for ch in value.chars() {
+        let units = ch.len_utf16();
+        if current_units > 0 && current_units + units > AUTH_CHUNK_UTF16_LIMIT {
+            parts.push(std::mem::take(&mut current));
+            current_units = 0;
+        }
+        current.push(ch);
+        current_units += units;
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+#[cfg(target_os = "windows")]
+fn parse_auth_chunk_count(value: &str) -> Option<usize> {
+    value
+        .strip_prefix(AUTH_CHUNK_MARKER_PREFIX)
+        .and_then(|count| count.parse::<usize>().ok())
+        .filter(|count| *count > 0 && *count <= 100_000)
+}
+
+#[cfg(target_os = "windows")]
+fn delete_auth_part(key: &str, part: usize) -> Result<(), String> {
+    match auth_part_entry(key, part)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Auth storage delete error: {e}")),
+    }
 }
 
 pub fn get_groq_api_key_from_store() -> Result<Option<String>, String> {
@@ -166,7 +213,20 @@ pub fn delete_entitlement_cache_for_user(user_id: &str) -> Result<(), String> {
 
 pub fn get_auth_storage(key: &str) -> Result<Option<String>, String> {
     match auth_entry(key)?.get_password() {
-        Ok(value) if !value.is_empty() => Ok(Some(value)),
+        Ok(value) if !value.is_empty() => {
+            #[cfg(target_os = "windows")]
+            if let Some(part_count) = parse_auth_chunk_count(&value) {
+                let mut combined = String::new();
+                for part in 0..part_count {
+                    let chunk = auth_part_entry(key, part)?.get_password().map_err(|e| {
+                        format!("Auth storage read error: missing secure storage part {part}: {e}")
+                    })?;
+                    combined.push_str(&chunk);
+                }
+                return Ok(Some(combined));
+            }
+            Ok(Some(value))
+        }
         Ok(_) => Ok(None),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => {
@@ -203,6 +263,74 @@ pub fn set_auth_storage(key: &str, value: &str) -> Result<(), String> {
         return delete_auth_storage(key);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let parts = split_auth_value(trimmed);
+        if parts.len() > 1 {
+            let previous_part_count = auth_entry(key)?
+                .get_password()
+                .ok()
+                .and_then(|value| parse_auth_chunk_count(&value));
+
+            for (part, chunk) in parts.iter().enumerate() {
+                auth_part_entry(key, part)?
+                    .set_password(chunk)
+                    .map_err(|e| {
+                        let message = format!("Auth storage write error: {e}");
+                        eprintln!("{message}");
+                        message
+                    })?;
+            }
+
+            auth_entry(key)?
+                .set_password(&format!("{AUTH_CHUNK_MARKER_PREFIX}{}", parts.len()))
+                .map_err(|e| format!("Auth storage write error: {e}"))?;
+
+            if let Some(previous_part_count) = previous_part_count {
+                for part in parts.len()..previous_part_count {
+                    delete_auth_part(key, part)?;
+                }
+            }
+
+            return match get_auth_storage(key)? {
+                Some(saved) if saved == trimmed => Ok(()),
+                Some(_) => Err(
+                    "Auth storage verification failed: secure storage returned a different value"
+                        .to_string(),
+                ),
+                None => Err(
+                    "Auth storage verification failed: secure storage returned no value"
+                        .to_string(),
+                ),
+            };
+        }
+
+        let previous_part_count = auth_entry(key)?
+            .get_password()
+            .ok()
+            .and_then(|value| parse_auth_chunk_count(&value));
+        let result = write_and_verify_auth_storage(
+            trimmed,
+            |stored_value| {
+                auth_entry(key)?.set_password(stored_value).map_err(|e| {
+                    let message = format!("Auth storage write error: {e}");
+                    eprintln!("{message}");
+                    message
+                })
+            },
+            || get_auth_storage(key),
+        );
+        if result.is_ok() {
+            if let Some(previous_part_count) = previous_part_count {
+                for part in 0..previous_part_count {
+                    delete_auth_part(key, part)?;
+                }
+            }
+        }
+        return result;
+    }
+
+    #[cfg(not(target_os = "windows"))]
     write_and_verify_auth_storage(
         trimmed,
         |stored_value| {
@@ -217,19 +345,39 @@ pub fn set_auth_storage(key: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn delete_auth_storage(key: &str) -> Result<(), String> {
-    match auth_entry(key)?.delete_credential() {
+    #[cfg(target_os = "windows")]
+    let part_count = auth_entry(key)?
+        .get_password()
+        .ok()
+        .and_then(|value| parse_auth_chunk_count(&value));
+
+    let result = match auth_entry(key)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => {
             let message = format!("Auth storage delete error: {e}");
             eprintln!("{message}");
             Err(message)
         }
+    };
+
+    #[cfg(target_os = "windows")]
+    if result.is_ok() {
+        if let Some(part_count) = part_count {
+            for part in 0..part_count {
+                delete_auth_part(key, part)?;
+            }
+        }
     }
+
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::write_and_verify_auth_storage;
+
+    #[cfg(target_os = "windows")]
+    use super::{parse_auth_chunk_count, split_auth_value, AUTH_CHUNK_MARKER_PREFIX};
 
     #[test]
     fn auth_storage_write_succeeds_after_matching_verification() {
@@ -272,6 +420,31 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("Keychain denied read"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn auth_chunks_preserve_utf16_and_do_not_split_surrogate_pairs() {
+        let value = format!("{}{}", "a".repeat(1_999), "😀".repeat(2));
+        let parts = split_auth_value(&value);
+
+        assert_eq!(parts.concat(), value);
+        assert!(parts
+            .iter()
+            .all(|part| part.encode_utf16().count() <= 2_000));
+        assert_eq!(parts[0].encode_utf16().count(), 1_999);
+        assert_eq!(parts[1], "😀😀");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn auth_chunk_marker_parses_only_valid_counts() {
+        assert_eq!(
+            parse_auth_chunk_count(&format!("{AUTH_CHUNK_MARKER_PREFIX}3")),
+            Some(3)
+        );
+        assert_eq!(parse_auth_chunk_count("echo-auth-chunk-v1:0"), None);
+        assert_eq!(parse_auth_chunk_count("not-a-marker"), None);
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

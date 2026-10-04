@@ -2725,38 +2725,41 @@ pub fn run() {
             // the NSImage at 18 points on macOS.
             let icon = Image::from_bytes(include_bytes!("../icons/tray-icon@2x.png"))?;
 
-            let _tray = TrayIconBuilder::new()
+            let tray_builder = TrayIconBuilder::new()
                 .icon(icon)
-                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .tooltip("Echo")
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open_app" => {
-                        show_main_window_internal(app);
+                .tooltip("Echo");
+
+            #[cfg(target_os = "macos")]
+            let tray_builder = tray_builder.icon_as_template(true);
+
+            let _tray = tray_builder.on_menu_event(|app, event| match event.id().as_ref() {
+                "open_app" => {
+                    show_main_window_internal(app);
+                }
+                "start_recording" => {
+                    emit_main_event(app, "tray-start-recording");
+                }
+                "stop_recording" => {
+                    emit_main_event(app, "tray-stop-recording");
+                }
+                "view_history" => {
+                    show_main_window_internal(app);
+                    let _ = app.emit("menu-open-history", ());
+                }
+                "settings" => {
+                    show_main_window_internal(app);
+                    let _ = app.emit("tray-open-settings", ());
+                }
+                "quit" => {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.quit_requested.store(true, Ordering::SeqCst);
                     }
-                    "start_recording" => {
-                        emit_main_event(app, "tray-start-recording");
-                    }
-                    "stop_recording" => {
-                        emit_main_event(app, "tray-stop-recording");
-                    }
-                    "view_history" => {
-                        show_main_window_internal(app);
-                        let _ = app.emit("menu-open-history", ());
-                    }
-                    "settings" => {
-                        show_main_window_internal(app);
-                        let _ = app.emit("tray-open-settings", ());
-                    }
-                    "quit" => {
-                        if let Some(state) = app.try_state::<AppState>() {
-                            state.quit_requested.store(true, Ordering::SeqCst);
-                        }
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
+                    app.exit(0);
+                }
+                _ => {}
+            })
                 .build(app)?;
 
             show_indicator_window(

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,10 +31,23 @@ const finalArgs =
     ? ["dev", "--config", "src-tauri/tauri.dev.conf.json", ...args.slice(1)]
     : args;
 
+if (args[0] === "dev" && process.platform === "win32") {
+  const protocolScript = join(root, "scripts", "register-windows-dev-protocol.ps1");
+  const register = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", protocolScript],
+    { cwd: root, stdio: "inherit" },
+  );
+  if (register.status !== 0) {
+    process.exit(register.status ?? 1);
+  }
+}
+
 const child = spawn(tauriBin, finalArgs, {
   cwd: root,
   env: process.env,
   stdio: "inherit",
+  shell: process.platform === "win32",
 });
 
 child.on("exit", (code, signal) => {

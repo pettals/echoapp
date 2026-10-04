@@ -8,8 +8,8 @@ on:
       - master
 
 jobs:
-  build:
-    name: Build and check
+  macos:
+    name: Build and check (macOS)
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -33,4 +33,46 @@ jobs:
       - name: Check Rust
         working-directory: src-tauri
         run: cargo check --locked
+
+      - name: Test Rust
+        working-directory: src-tauri
+        run: cargo test --locked
+
+  windows:
+    name: Build and check (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          targets: stable-x86_64-pc-windows-msvc
+
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18.1.8"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Rust
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: Test Rust
+        working-directory: src-tauri
+        run: cargo test --locked
 

@@ -25,7 +25,7 @@
 - [x] Add first-run auth gate before setup readiness with Google sign-in and email/password tabs.
 - [x] Add OAuth callback/deep-link handling in Tauri so Google sign-in returns users to Echo and resumes onboarding.
 - [x] Add auth loading, success, cancellation, network failure, invalid credentials, existing email, weak password, and unverified email UI states.
-- [x] Add password reset entry point and recovery copy, even if full reset completion is deferred to Supabase-hosted email links.
+- [x] Add password reset entry point, recovery copy, and a hosted browser callback that returns Windows and macOS users to the native reset-password flow.
 - [x] Add a streamlined three-step first-run onboarding flow: branded welcome, microphone plus paste permissions, and hotkey dictation test.
 - [x] Keep full provider/model setup in Settings while allowing entitled Cloud users to verify and save a Groq API key inline during onboarding.
 - [x] Add microphone setup with device selection, permission guidance, live mic test, and a clear success/failure state.

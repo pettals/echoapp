@@ -135,9 +135,13 @@
 
     <script>
       (function () {
-        var echoCallback = new URL("echo://auth/callback");
         var current = new URL(window.location.href);
         var params = new URLSearchParams(current.search);
+        var protocol = params.get("protocol") === "echo-dev" ? "echo-dev:" : "echo:";
+        var flow = params.get("flow") === "reset" ? "reset-password" : "callback";
+        params.delete("protocol");
+        params.delete("flow");
+        var echoCallback = new URL(protocol + "//auth/" + flow);
 
         if (current.hash) {
           var hashParams = new URLSearchParams(current.hash.replace(/^#/, ""));

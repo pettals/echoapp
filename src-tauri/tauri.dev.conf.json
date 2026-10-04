@@ -8,5 +8,12 @@
       "icons-dev/icon.icns",
       "icons-dev/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["echo-dev"]
+      }
+    }
   }
 }
