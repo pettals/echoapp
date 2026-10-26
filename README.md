@@ -14,6 +14,7 @@ Echo is a macOS-first desktop dictation app from Pettal Technology. Hold a globa
 - Global shortcut recording with setup validation.
 - Groq-hosted Whisper transcription with optional Groq cleanup.
 - Local Whisper transcription with verified model downloads and offline raw transcripts.
+- Bark 3 Clean for English dictation with built-in filler removal on Apple Silicon Macs running macOS 15+; fully local and included in the free plan.
 - macOS paste automation with clipboard fallback when Accessibility or focus restore is unavailable.
 - Local transcript history with bounded retention, disable-save support, delete, copy, and guarded clear-all.
 - Local Notepad with autosaved notes, markdown preview, and note-specific dictation insertion.
@@ -23,9 +24,9 @@ Echo is a macOS-first desktop dictation app from Pettal Technology. Hold a globa
 
 - Node.js 18 or newer.
 - Rust stable toolchain.
-- macOS: Xcode Command Line Tools.
+- macOS development: Xcode with Swift 6.2 or newer (for the native Bark helper).
 - Optional for Groq mode: a Groq API key from the Groq console.
-- Optional for local mode: enough disk space for the selected Whisper model.
+- Optional for local mode: enough disk space for the selected model. Bark's Core ML download is 447,420,698 bytes (about 427 MiB), plus macOS's generated model cache.
 
 ## Development Setup
 
@@ -35,6 +36,8 @@ npm run tauri dev
 ```
 
 On first launch, Echo guides setup for provider/model readiness, microphone access, shortcut validation, and paste permission guidance.
+
+The macOS Tauri wrapper builds and stages the native Bark helper automatically. Users of packaged Echo builds install no Python or Swift tools. Windows and Intel/older Macs retain Whisper; Bark appears unavailable with an explanation. See [native/bark/README.md](native/bark/README.md) for runtime testing and packaging details.
 
 ## Supabase Auth Setup
 
@@ -101,3 +104,8 @@ src-tauri/src/        # Rust/Tauri backend
 ## License Notes
 
 Echo is a Pettal Technology product planned for freemium production distribution. See `LICENSE-NOTES.md` before sharing, packaging, or distributing builds.
+
+
+### Meetings (Echo Pro)
+
+Meetings adds local recording, timestamped transcripts, structured notes and a searchable on-device library on macOS 13+ and Windows 10/11 x64. Bark/Whisper transcribes locally; Qwen3.5-4B creates notes through a bundled native runtime. Temporary audio is deleted after transcription. Optional OpenAI, Gemini and Anthropic providers require your own securely stored key and explicit selection. Offline use requires initial signed Pro verification. See [Meetings setup, privacy and release gates](docs/MEETINGS.md).

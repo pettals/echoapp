@@ -1,4 +1,16 @@
 {
+  "bundle": {
+    "externalBin": [
+      "binaries/echo-bark",
+      "binaries/echo-notes",
+      "binaries/echo-capture"
+    ],
+    "resources": {
+      "binaries/FluidAudio_FluidAudio.bundle/": "FluidAudio_FluidAudio.bundle/",
+      "../native/bark/Notices/": "BarkNotices/",
+      "../native/notes/Notices/": "MeetingNotices/"
+    }
+  },
   "app": {
     "windows": [
       {

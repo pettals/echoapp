@@ -1,0 +1,17 @@
+Echo local meeting notes use Qwen3.5-4B by the Qwen team, distributed under
+Apache License 2.0. Echo downloads only the Q4_K_M language-model GGUF conversion
+published by Unsloth, pinned in src-tauri/notes-manifest.json. No vision projector
+or Python runtime is required. This integration is not endorsed by Qwen or Unsloth.
+
+Sources:
+https://huggingface.co/Qwen/Qwen3.5-4B
+https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
+
+Native inference uses llama.cpp by Georgi Gerganov and contributors under the
+MIT license. The runtime revision is pinned in native/notes/CMakeLists.txt.
+The bundled notices include llama.cpp, nlohmann/json, and vendored hash/HTTP
+utility licences. Network/TLS model downloading is not enabled in the helper;
+Echo's Rust downloader verifies all model files before inference.
+
+macOS recording uses Apple's ScreenCaptureKit and AVFoundation frameworks.
+Windows recording uses the Windows Audio Session API (WASAPI).

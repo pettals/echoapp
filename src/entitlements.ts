@@ -5,6 +5,7 @@ import {
   FunctionsRelayError,
 } from "@supabase/supabase-js";
 import { getSession, supabase } from "./auth";
+import {refreshMeetingLicense} from "./meetings";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -136,7 +137,7 @@ export async function refreshEntitlementFromServer(
   const leaseUntil = paid ? data.leaseUntil ?? leaseUntilFromNow() : null;
 
   if (HAS_TAURI) {
-    return invoke<EntitlementStatus>("cache_entitlement", {
+    const status=await invoke<EntitlementStatus>("cache_entitlement", {
       cache: {
         userId,
         tier: data.tier,
@@ -145,6 +146,9 @@ export async function refreshEntitlementFromServer(
         leaseUntil: leaseUntil ?? data.checkedAt,
       },
     });
+    if(paid)void refreshMeetingLicense(userId,session.access_token).catch(()=>{});
+    else await invoke("revoke_meeting_license",{userId}).catch(()=>{});
+    return status;
   }
 
   return {

@@ -30,8 +30,20 @@ struct CachedWhisperContext {
 static LOCAL_MODEL_CACHE: OnceLock<Mutex<Option<CachedWhisperContext>>> = OnceLock::new();
 
 pub fn model_path(model_size: &str) -> Result<PathBuf, String> {
+    if !matches!(model_size, "small" | "medium") {
+        return Err("Unknown Whisper model. Choose a model in Settings.".to_string());
+    }
     let dir = AppConfig::models_dir()?;
     Ok(dir.join(format!("ggml-{model_size}.bin")))
+}
+
+pub fn release_cache() {
+    if let Some(cache) = LOCAL_MODEL_CACHE.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
 }
 
 /// Load WAV file and convert to 16kHz mono f32 samples as required by Whisper.

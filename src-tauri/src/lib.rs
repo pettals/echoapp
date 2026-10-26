@@ -1,5 +1,6 @@
 mod app_error;
 mod audio;
+mod bark;
 mod config;
 mod diagnostics;
 mod entitlement;
@@ -7,7 +8,9 @@ mod focus;
 mod groq;
 mod history;
 mod input;
+mod local_models;
 mod media;
+mod meetings;
 mod model_download;
 mod notepad;
 mod secure;
@@ -922,6 +925,17 @@ mod tests {
 }
 
 fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppError> {
+    let _capture_gate = meetings::CAPTURE_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if meetings::capture_active() || app.state::<meetings::commands::Service>().busy() {
+        return Err(AppError::new(
+            "meeting_in_progress",
+            "Finish the current meeting before starting dictation.",
+            true,
+            None,
+        ));
+    }
     if state.recording_active.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -941,7 +955,7 @@ fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppErr
     if cfg.model_provider == "api" && cfg.groq_api_key.trim().is_empty() {
         return Err(AppError::new(
             "missing_api_key",
-            "Enter a Groq API key or switch to a downloaded local Whisper model.",
+            "Enter a Groq API key or switch to a downloaded local model.",
             false,
             Some("Open Settings"),
         ));
@@ -955,7 +969,7 @@ fn start_recorder(state: &AppState, app: &tauri::AppHandle) -> Result<(), AppErr
         } else {
             return Err(AppError::new(
                 "pro_verification_offline",
-                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline.",
+                "No internet connection. Reconnect to verify Echo Pro, or download a local model before dictating offline.",
                 false,
                 Some("Open Settings"),
             ));
@@ -1350,6 +1364,11 @@ fn save_config(
     }
     let save_result = config.save_with_status()?;
     if let Ok(mut cached_config) = state.config.lock() {
+        if cached_config.local_model_size != save_result.config.local_model_size
+            || cached_config.model_provider != save_result.config.model_provider
+        {
+            local_models::release();
+        }
         *cached_config = save_result.config.clone();
     }
     Ok(save_result)
@@ -1416,7 +1435,7 @@ fn get_setup_status() -> setup::SetupStatus {
         {
             setup::get_status_with_provider_error(
                 &cfg,
-                "Unlock Echo Pro to use cloud transcription, or switch to a local Whisper model.",
+                "Unlock Echo Pro to use cloud transcription, or switch to a local model.",
             )
         }
         Ok(cfg) => setup::get_status(&cfg),
@@ -1842,8 +1861,14 @@ async fn transcribe_local_for_run(
     let model_size = cfg.local_model_size.clone();
     let requested_threads = cfg.local_transcription_threads;
     let local_path = path.to_path_buf();
+    let progress_app = app.clone();
     let local_result = tokio::task::spawn_blocking(move || {
-        whisper::transcribe_local_with_metrics(&local_path, &model_size, requested_threads)
+        local_models::transcribe(&local_path, &model_size, requested_threads, || {
+            let _ = progress_app.emit(
+                "local-model-preparing",
+                "Bark is preparing for its first dictation. This can take a minute or two.",
+            );
+        })
     })
     .await
     .map_err(|e| {
@@ -1870,13 +1895,15 @@ async fn transcribe_local_for_run(
                     speech_detected: Some(has_speech),
                     model_cache_hit: Some(local.metrics.model_cache_hit),
                     model_load_ms: Some(local.metrics.model_load_ms),
-                    audio_decode_ms: Some(local.metrics.audio_decode_ms),
+                    audio_decode_ms: (local.metrics.model_size != local_models::BARK_ID)
+                        .then_some(local.metrics.audio_decode_ms),
                     inference_ms: Some(local.metrics.inference_ms),
                     cloud_transcribe_ms: None,
                     cleanup_ms: None,
                     paste_ms: None,
                     total_ms: elapsed_ms(total_start),
-                    thread_count: Some(local.metrics.thread_count),
+                    thread_count: (local.metrics.thread_count > 0)
+                        .then_some(local.metrics.thread_count),
                     error_code: None,
                 },
             );
@@ -1902,9 +1929,8 @@ async fn transcribe_local_for_run(
                     cleanup_ms: None,
                     paste_ms: None,
                     total_ms: elapsed_ms(total_start),
-                    thread_count: Some(whisper::local_thread_count(
-                        cfg.local_transcription_threads,
-                    )),
+                    thread_count: (cfg.local_model_size != local_models::BARK_ID)
+                        .then(|| whisper::local_thread_count(cfg.local_transcription_threads)),
                     error_code: Some(error.code.clone()),
                 },
             );
@@ -1962,7 +1988,7 @@ async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<S
             cleanup_recording_file(&path);
             return Err(AppError::new(
                 "pro_verification_offline",
-                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline.",
+                "No internet connection. Reconnect to verify Echo Pro, or download a local model before dictating offline.",
                 false,
                 Some("Open Settings"),
             ));
@@ -1988,7 +2014,7 @@ async fn transcribe_audio(app: tauri::AppHandle, audio_path: String) -> Result<S
             if cfg.groq_api_key.is_empty() {
                 Err(AppError::new(
                     "missing_api_key",
-                    "Enter a Groq API key or switch to a downloaded local Whisper model.",
+                    "Enter a Groq API key or switch to a downloaded local model.",
                     false,
                     Some("Open Settings"),
                 ))
@@ -2292,6 +2318,25 @@ fn verify_model_status(
 }
 
 #[tauri::command]
+fn list_local_models() -> Vec<local_models::LocalModelDescriptor> {
+    local_models::catalog()
+}
+
+#[tauri::command]
+async fn download_local_model(
+    model_size: String,
+    access_token: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), AppError> {
+    model_download::download_model(
+        &model_size,
+        &access_token,
+        Arc::clone(&state.download_state),
+    )
+    .await
+}
+
+#[tauri::command]
 async fn download_whisper_model(
     model_size: String,
     access_token: String,
@@ -2309,8 +2354,26 @@ fn get_model_download_progress(
 }
 
 #[tauri::command]
-async fn delete_whisper_model(model_size: String) -> Result<(), String> {
-    model_download::delete_model(&model_size).await
+async fn delete_local_model(
+    model_size: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if state.download_state.active.load(Ordering::SeqCst) {
+        return Err(
+            "Wait for the current model download to finish before removing a model.".to_string(),
+        );
+    }
+    tokio::task::spawn_blocking(move || model_download::delete_model(&model_size))
+        .await
+        .map_err(|_| "Could not remove the local model. Try again.".to_string())?
+}
+
+#[tauri::command]
+async fn delete_whisper_model(
+    model_size: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    delete_local_model(model_size, state).await
 }
 
 #[tauri::command]
@@ -2502,6 +2565,7 @@ where
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(meetings::commands::Service::default())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window_internal(app);
         }))
@@ -2770,6 +2834,26 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            meetings::commands::meeting_readiness,
+            meetings::commands::meeting_status,
+            meetings::commands::list_meetings,
+            meetings::commands::get_meeting,
+            meetings::commands::update_meeting,
+            meetings::commands::save_meeting_settings,
+            meetings::commands::save_meeting_provider_key,
+            meetings::commands::test_meeting_provider,
+            meetings::commands::cache_meeting_license,
+            meetings::commands::activate_offline_meetings_license,
+            meetings::commands::revoke_meeting_license,
+            meetings::commands::start_meeting,
+            meetings::commands::control_meeting,
+            meetings::commands::delete_meeting,
+            meetings::commands::discard_meeting_recording,
+            meetings::commands::cancel_meeting_processing,
+            meetings::commands::regenerate_meeting_notes,
+            meetings::commands::export_meeting,
+            meetings::commands::save_meeting_export,
+            meetings::commands::show_meetings,
             get_config,
             save_config,
             get_launch_at_login,
@@ -2800,6 +2884,9 @@ pub fn run() {
             pause_media,
             resume_media,
             check_model_status,
+            list_local_models,
+            download_local_model,
+            delete_local_model,
             verify_model_status,
             download_whisper_model,
             get_model_download_progress,
@@ -2832,6 +2919,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<meetings::commands::Service>().shutdown();
+                meetings::runtime::shutdown();
+                bark::shutdown();
+            }
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 let should_quit = app
                     .try_state::<AppState>()
