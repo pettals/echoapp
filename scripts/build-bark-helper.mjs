@@ -1,10 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync } from "node:fs";
+import { chmodSync, cpSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packagePath = join(root, "native/bark");
+
+function makeReadable(path) {
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink()) return;
+  chmodSync(path, (metadata.mode & 0o777) | (metadata.isDirectory() ? 0o755 : 0o644));
+  if (metadata.isDirectory())
+    for (const child of readdirSync(path)) makeReadable(join(path, child));
+}
 
 function run(command, args, capture = false) {
   const result = spawnSync(command, args, { cwd: root, stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit", encoding: "utf8" });
@@ -30,7 +38,10 @@ export function buildBarkHelper({ universal = false, release = false, target } =
     binaries.push(destination);
     // SwiftPM Bundle.module looks for resources in Bundle.main.resourceURL.
     for (const resource of readdirSync(binPath).filter((name) => name.endsWith(".bundle"))) {
-      cpSync(join(binPath, resource), join(output, resource), { recursive: true });
+      const destination = join(output, resource);
+      rmSync(destination, { recursive: true, force: true });
+      cpSync(join(binPath, resource), destination, { recursive: true });
+      makeReadable(destination);
     }
   }
   if (universal) run("lipo", ["-create", ...binaries, "-output", join(output, "echo-bark-universal-apple-darwin")]);
