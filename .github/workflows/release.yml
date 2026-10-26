@@ -10,7 +10,7 @@ on:
         type: choice
         options:
           - macos
-          - windows-placeholder
+          - windows
       draft_release:
         description: "Create a draft GitHub release"
         required: true
@@ -71,6 +71,15 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Verify offline Meetings licence provisioning
+        run: node -e "if (!Object.keys(require('./src-tauri/meeting-license-keys.json')).length) throw Error('Provision Meetings signing keys before release')"
+
+      - name: Build universal Meetings helpers
+        run: node scripts/build-meeting-helpers.mjs --universal --release
+
+      - name: Build universal Bark helper
+        run: node scripts/build-bark-helper.mjs --universal --release
+
       - name: Check Rust
         working-directory: src-tauri
         run: cargo check --locked
@@ -88,6 +97,23 @@ jobs:
           releaseDraft: ${{ inputs.draft_release }}
           prerelease: true
 
+      - name: Verify bundled Bark helper and app signatures
+        # tauri-action signs nested externalBin code before notarizing the app.
+        # Verify the helper as well as the enclosing resource seal.
+        run: |
+          for app in src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app; do
+            codesign --verify --deep --strict "$app"
+            for helper in echo-bark echo-notes echo-capture; do
+              codesign --verify --strict "$app/Contents/MacOS/$helper"
+              helper_archs="$(lipo -archs "$app/Contents/MacOS/$helper")"
+              [[ " $helper_archs " == *" arm64 "* ]]
+              [[ " $helper_archs " == *" x86_64 "* ]]
+            done
+            bark_archs="$(lipo -archs "$app/Contents/MacOS/echo-bark")"
+            [[ " $bark_archs " == *" arm64 "* ]]
+            [[ " $bark_archs " == *" x86_64 "* ]]
+          done
+
       - name: Upload macOS bundle artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -97,14 +123,33 @@ jobs:
             src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
 
-  windows-release-placeholder:
-    name: Windows signing and MSI placeholder
-    if: inputs.platform == 'windows-placeholder'
+  windows-release:
+    name: Windows installer candidate
+    if: inputs.platform == 'windows'
     runs-on: windows-latest
     steps:
-      - name: Explain deferred Windows release path
-        shell: pwsh
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Verify offline Meetings licence provisioning
+        run: node -e "if (!Object.keys(require('./src-tauri/meeting-license-keys.json')).length) throw Error('Provision Meetings signing keys before release')"
+      - name: Build native Meetings helpers
+        run: node scripts/build-meeting-helpers.mjs --release
+      - name: Check and test Rust
+        working-directory: src-tauri
         run: |
-          Write-Host "Windows release builds are intentionally deferred."
-          Write-Host "Do not publish signed Windows installers until shortcut, focus restore, clipboard, paste simulation, settings, history, local transcription, and installer launch are tested on a Windows machine."
-          Write-Host "Expected future inputs: WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD, certificate thumbprint, timestamp URL, and a real Windows QA pass."
+          cargo check --locked
+          cargo test --locked --lib
+      - name: Build Windows installer candidate
+        run: npm run tauri -- build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echo-windows-installer-candidate
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+      # Publishing requires Windows signing and real-device QA recorded in MANUAL_QA.
+      # This job uploads a candidate; it does not publish an unsigned installer.
