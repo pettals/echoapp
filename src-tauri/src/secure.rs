@@ -5,6 +5,31 @@ const GROQ_ACCOUNT: &str = "groq-api-key";
 const ENTITLEMENT_ACCOUNT: &str = "entitlement-cache";
 const AUTH_ACCOUNT_PREFIX: &str = "supabase-auth:";
 
+// Meeting credentials never form part of AppConfig or a frontend read response.
+pub fn get_private_credential(account: &str) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(SERVICE, account)
+        .map_err(|_| "Secure credential storage is unavailable")?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("Could not read the secure credential store".into()),
+    }
+}
+pub fn set_private_credential(account: &str, value: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE, account)
+        .map_err(|_| "Secure credential storage is unavailable")?;
+    if value.is_empty() {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("Could not remove the secure credential".into()),
+        }
+    } else {
+        entry
+            .set_password(value)
+            .map_err(|_| "Could not save to the secure credential store".into())
+    }
+}
+
 static GROQ_API_KEY_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ACTIVE_ENTITLEMENT_USER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 

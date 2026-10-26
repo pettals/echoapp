@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type MouseEvent } from "react";
-import { AppWindow, Check, Copy, FileText, Mic } from "./AureoleIcons";
+import { AppWindow, Check, Copy, FileText, Mic, Users } from "./AureoleIcons";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import "./AudioHudIndicator.css";
 
@@ -26,6 +26,7 @@ export interface AudioHudIndicatorProps {
   onCancel?: () => void;
   onCopy?: () => void;
   onNotepadAction?: () => void;
+  onMeetingAction?: () => void;
 }
 
 const WAVEFORM_BARS = [
@@ -66,7 +67,7 @@ const RECORDING_HEIGHTS: Record<LiveTier, number> = {
   long: 132,
 };
 
-type IdleAction = "mic" | "notepad";
+type IdleAction = "mic" | "notepad" | "meeting";
 type LiveTier = "compact" | "short" | "medium" | "long";
 
 function stateLabel(state: AudioHudIndicatorState, completeLabel?: string): string {
@@ -113,6 +114,7 @@ export default function AudioHudIndicator({
   onCancel,
   onCopy,
   onNotepadAction,
+  onMeetingAction,
 }: AudioHudIndicatorProps) {
   const reduceMotion = useReducedMotion();
   const clampedLevel = Math.min(Math.max(level, 0), 1);
@@ -389,7 +391,7 @@ export default function AudioHudIndicator({
                 </span>
               </motion.button>
 
-              <motion.span className="audio-hud__center-divider" aria-hidden variants={actionItemVariants} />
+              {onMeetingAction ? <motion.button className="audio-hud__action" type="button" aria-label="Record meeting" onClick={event=>handleButtonClick(event,onMeetingAction)} onPointerEnter={()=>setActiveAction("meeting")} onPointerLeave={()=>setActiveAction(current=>current==="meeting"?null:current)} onFocus={()=>setActiveAction("meeting")} onBlur={()=>setActiveAction(current=>current==="meeting"?null:current)} variants={actionItemVariants} whileTap={reduceMotion?undefined:{scale:.96}}>{renderShortcutLabel("meeting","Record meeting")}<span className="audio-hud__action-circle"><Users size={17}/></span></motion.button> : <motion.span className="audio-hud__center-divider" aria-hidden variants={actionItemVariants} />}
 
               <motion.button
                 className="audio-hud__action audio-hud__action--notepad"

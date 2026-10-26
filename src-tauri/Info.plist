@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Echo needs microphone access to record your voice for transcription.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Echo records computer audio only when you start an online meeting. Audio is transcribed on this computer and then deleted.</string>
 </dict>
 </plist>

@@ -30,9 +30,11 @@ import {
   SettingsRow,
   Toggle,
 } from "./ui";
+import { PREVIEW_LOCAL_MODELS, type LocalModelDescriptor, type LocalModelId } from "../localModels";
 import "./Settings.css";
 
 interface ModelStatus {
+  supported: boolean;
   downloaded: boolean;
   downloading: boolean;
   file_size_bytes: number;
@@ -386,14 +388,15 @@ function ProPaywallCard({
 }
 
 function ModelDownloadSection({
-  modelSize,
+  model,
   onSelect,
   selected,
 }: {
-  modelSize: "small" | "medium";
-  onSelect: (modelSize: "small" | "medium") => void;
+  model: LocalModelDescriptor;
+  onSelect: (modelSize: LocalModelId) => void;
   selected: boolean;
 }) {
+  const modelSize = model.id;
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [error, setError] = useState("");
@@ -403,10 +406,11 @@ function ModelDownloadSection({
   const checkStatus = useCallback(async () => {
     if (!HAS_TAURI) {
       const mockStatus = {
+        supported: model.supported,
         downloaded: modelSize === "small",
         downloading: false,
         file_size_bytes: modelSize === "small" ? 487_601_967 : 0,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        expected_size_bytes: model.download_size_bytes,
         integrity_checked: false,
         integrity_error: null,
         model_size: modelSize,
@@ -420,10 +424,11 @@ function ModelDownloadSection({
       setStatus(s);
       return s;
     } catch (e) {
+      setError("Could not check this model. Reopen Settings to try again.");
       console.error("Status check error:", e);
       return null;
     }
-  }, [modelSize]);
+  }, [modelSize, model.download_size_bytes, model.supported]);
 
   useEffect(() => {
     checkStatus();
@@ -438,27 +443,26 @@ function ModelDownloadSection({
     const interval = setInterval(async () => {
       try {
         const p = await invoke<DownloadProgress>("get_model_download_progress");
-        setProgress(p);
-        if (p.percentage >= 100) {
-          clearInterval(interval);
-          await checkStatus();
-        }
+        if (p.model_size === modelSize) setProgress(p);
+        const next = await checkStatus();
+        if (next && !next.downloading) clearInterval(interval);
       } catch {
         /* ignore */
       }
     }, 400);
 
     return () => clearInterval(interval);
-  }, [status?.downloading, checkStatus]);
+  }, [status?.downloading, checkStatus, modelSize]);
 
   const handleDownload = async () => {
     setError("");
     if (!HAS_TAURI) {
       setStatus({
+        supported: model.supported,
         downloaded: true,
         downloading: false,
-        file_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        file_size_bytes: model.download_size_bytes,
+        expected_size_bytes: model.download_size_bytes,
         integrity_checked: true,
         integrity_error: null,
         model_size: modelSize,
@@ -470,7 +474,7 @@ function ModelDownloadSection({
     try {
       const session = await getSession();
       const accessToken = session?.access_token ?? "";
-      await invoke("download_whisper_model", { modelSize, accessToken });
+      await invoke("download_local_model", { modelSize, accessToken });
       await checkStatus();
     } catch (e) {
       setError(formatErrorMessage(e));
@@ -510,10 +514,11 @@ function ModelDownloadSection({
   const handleDelete = async () => {
     if (!HAS_TAURI) {
       setStatus({
+        supported: model.supported,
         downloaded: false,
         downloading: false,
         file_size_bytes: 0,
-        expected_size_bytes: modelSize === "small" ? 487_601_967 : 1_533_763_059,
+        expected_size_bytes: model.download_size_bytes,
         integrity_checked: false,
         integrity_error: null,
         model_size: modelSize,
@@ -522,21 +527,17 @@ function ModelDownloadSection({
     }
 
     try {
-      await invoke("delete_whisper_model", { modelSize });
+      await invoke("delete_local_model", { modelSize });
       await checkStatus();
     } catch (e) {
       setError(formatErrorMessage(e));
     }
   };
 
-  const expectedSize =
-    status?.expected_size_bytes || (modelSize === "small" ? 487_601_967 : 1_533_763_059);
+  const expectedSize = status?.expected_size_bytes || model.download_size_bytes;
   const sizeLabel = `${formatBytes(expectedSize)} download`;
-  const modelBenefit =
-    modelSize === "small"
-      ? "Fastest. Good for everyday dictation."
-      : "More accurate. Larger download.";
-  const canSelect = Boolean(status?.downloaded && !status.downloading);
+  const modelBenefit = model.description;
+  const canSelect = Boolean(model.supported && status?.supported && status.downloaded && !status.downloading);
   const selectedAvailable = selected && canSelect;
   const statusTone = !status
     ? "neutral"
@@ -547,7 +548,9 @@ function ModelDownloadSection({
       : status.downloading
         ? "accent"
         : "neutral";
-  const statusLabel = !status
+  const statusLabel = !model.supported
+    ? "Unavailable"
+    : !status
     ? "Checking"
     : selectedAvailable
       ? "Selected"
@@ -567,7 +570,7 @@ function ModelDownloadSection({
     >
       <div className="model-download-card__header">
         <div>
-          <strong>Whisper {modelSize.charAt(0).toUpperCase() + modelSize.slice(1)}</strong>
+          <strong>{model.name}</strong>
           <span>{sizeLabel}</span>
         </div>
         <div className="model-download-card__header-actions">
@@ -591,7 +594,7 @@ function ModelDownloadSection({
                 </IconButton>
               )}
             </>
-          ) : status?.downloaded && !status.downloading ? (
+          ) : canSelect ? (
             <Button variant="outline" onClick={() => onSelect(modelSize)} size="sm">
               Use this model
             </Button>
@@ -602,6 +605,10 @@ function ModelDownloadSection({
       </div>
 
       <p className="model-download-card__subtitle">{modelBenefit}</p>
+      {!model.supported && <InlineNotice tone="info">{model.unsupported_reason}</InlineNotice>}
+      {selected && modelSize === "bark-3-clean" && model.supported && (
+        <p className="settings-supporting-copy">The first dictation may take a minute or two while macOS prepares Bark. Later dictations reuse the loaded model.</p>
+      )}
 
       <AnimatePresence initial={false} mode="wait">
         {status?.downloading && (
@@ -644,7 +651,7 @@ function ModelDownloadSection({
               Checking...
             </Button>
           )}
-          {status && !status.downloaded && !status.downloading && (
+          {model.supported && status && !status.downloaded && !status.downloading && (
             <Button variant="secondary" onClick={handleDownload} size="sm">
               {status.integrity_error ? "Retry Download" : "Download Model"}
             </Button>
@@ -675,6 +682,17 @@ export default function Settings({
   onRefreshSetup,
 }: SettingsProps) {
   const [form, setForm] = useState<AppConfig>({ ...config });
+  const [localModels, setLocalModels] = useState<LocalModelDescriptor[]>(HAS_TAURI ? [] : PREVIEW_LOCAL_MODELS);
+  const [catalogError, setCatalogError] = useState("");
+
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let cancelled = false;
+    invoke<LocalModelDescriptor[]>("list_local_models")
+      .then((models) => { if (!cancelled) setLocalModels(models); })
+      .catch(() => { if (!cancelled) setCatalogError("Could not check local models. Reopen Settings to try again."); });
+    return () => { cancelled = true; };
+  }, []);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [groqTest, setGroqTest] = useState<{
@@ -754,7 +772,7 @@ export default function Settings({
         return;
       }
       if (!nextForm.groq_api_key) {
-        setSaveError("Enter a Groq API key or switch to a local Whisper model.");
+        setSaveError("Enter a Groq API key or switch to a local model.");
         return;
       }
       if (!nextForm.groq_api_key.startsWith("gsk_")) {
@@ -1168,25 +1186,23 @@ export default function Settings({
                   title="On-device model"
                 >
                   <div className="local-model-list">
-                    <ModelDownloadSection
-                      key="small"
-                      modelSize="small"
-                      selected={form.local_model_size === "small"}
-                      onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
-                    />
-                    <ModelDownloadSection
-                      key="medium"
-                      modelSize="medium"
-                      selected={form.local_model_size === "medium"}
-                      onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
-                    />
+                    {catalogError && <Alert tone="error">{catalogError}</Alert>}
+                    {!localModels.length && !catalogError && <p>Checking available models...</p>}
+                    {localModels.map((model) => (
+                      <ModelDownloadSection
+                        key={model.id}
+                        model={model}
+                        selected={form.local_model_size === model.id}
+                        onSelect={(local_model_size) => setForm({ ...form, local_model_size })}
+                      />
+                    ))}
                   </div>
                   {form.local_model_size === "medium" && (
                     <InlineNotice tone="warning">
                       Medium uses more memory and may take longer on the first dictation after launch.
                     </InlineNotice>
                   )}
-                  <Disclosure className="settings-inner-disclosure" summary="Advanced">
+                  {form.local_model_size !== "bark-3-clean" && <Disclosure className="settings-inner-disclosure" summary="Advanced">
                     <SelectField
                       id="local-transcription-threads"
                       label="Performance"
@@ -1198,9 +1214,9 @@ export default function Settings({
                         })
                       }
                       options={LOCAL_THREAD_OPTIONS}
-                      helperText="Choose how much processing power Echo can use."
+                      helperText="Choose how much processing power Whisper can use."
                     />
-                  </Disclosure>
+                  </Disclosure>}
                 </SettingsSection>
               )}
             </>

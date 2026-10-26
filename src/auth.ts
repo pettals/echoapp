@@ -314,12 +314,28 @@ export async function getFreshSession(currentSession?: Session | null) {
 }
 
 export async function restorePersistedSession() {
+  async function localMeetingSession(){
+    if(!HAS_TAURI)return null;
+    const raw=await getRawAuthStorage(AUTH_STORAGE_KEY);
+    const saved=raw?JSON.parse(raw) as Session:null;
+    if(saved&&!saved.user){const userRaw=await getRawAuthStorage(AUTH_USER_STORAGE_KEY);const user=userRaw?JSON.parse(userRaw):null;if(user?.user)saved.user=user.user;}
+    if(saved?.user?.id&&await invoke<boolean>("activate_offline_meetings_license",{userId:saved.user.id}))return saved;
+    return null;
+  }
+  if(typeof navigator!=="undefined"&&!navigator.onLine){const local=await localMeetingSession().catch(()=>null);if(local)return local;}
   try {
     return await getFreshSession(null);
   } catch (e) {
     if (isInvalidStoredSessionError(e)) {
       await clearAuthSessionStorage();
       return null;
+    }
+    if(HAS_TAURI){
+      // An expired network session may still identify the owner of a signed local
+      // Meetings licence. This grants no cloud-provider or billing authorization.
+      try{
+        const local=await localMeetingSession();if(local)return local;
+      }catch{/* Keep the original actionable session error. */}
     }
     throw e;
   }

@@ -295,7 +295,7 @@ fn get_status_inner(config: &AppConfig, credential_error: Option<&str>) -> Setup
                     "provider",
                     "Provider",
                     "error",
-                    "Add a Groq API key or switch to a downloaded local Whisper model.",
+                    "Add a Groq API key or switch to a downloaded local model.",
                     Some("Open Settings"),
                 ),
                 Err(e) => check(
@@ -310,23 +310,39 @@ fn get_status_inner(config: &AppConfig, credential_error: Option<&str>) -> Setup
         checks.push(provider_check);
     } else {
         let downloaded = model_download::is_model_available(&config.local_model_size);
-        checks.push(if downloaded {
-            check(
-                "provider",
-                "Provider",
-                "ok",
-                "Selected local Whisper model is downloaded.",
-                None,
-            )
-        } else {
-            check(
-                "provider",
-                "Provider",
-                "error",
-                "Download the selected local Whisper model before dictating offline.",
-                Some("Open Settings"),
-            )
-        });
+        checks.push(
+            if let Err(error) = crate::local_models::require_supported(&config.local_model_size) {
+                check(
+                    "provider",
+                    "Provider",
+                    "error",
+                    &error.message,
+                    Some("Open Settings"),
+                )
+            } else if downloaded {
+                check(
+                    "provider",
+                    "Provider",
+                    "ok",
+                    &format!(
+                        "{} is downloaded and ready for local dictation.",
+                        crate::local_models::name(&config.local_model_size)
+                    ),
+                    None,
+                )
+            } else {
+                check(
+                    "provider",
+                    "Provider",
+                    "error",
+                    &format!(
+                        "Download {} in Settings before dictating offline.",
+                        crate::local_models::name(&config.local_model_size)
+                    ),
+                    Some("Open Settings"),
+                )
+            },
+        );
     }
 
     checks.push(match audio::list_devices() {

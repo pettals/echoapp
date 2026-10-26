@@ -1,3 +1,4 @@
+import { localModelName, type LocalModelId } from "./localModels";
 import {
   Suspense,
   lazy,
@@ -32,6 +33,7 @@ import {
   Settings as SettingsIcon,
   Square,
   Trash2,
+  Users,
   X,
 } from "./components/AureoleIcons";
 import { invoke } from "@tauri-apps/api/core";
@@ -68,6 +70,9 @@ import {
   type EntitlementStatus,
 } from "./entitlements";
 import AudioHudIndicator, { type AudioHudIndicatorState } from "./components/AudioHudIndicator";
+
+import MeetingHud from "./components/MeetingHud";
+import {activeMeeting,EMPTY_MEETING_STATUS,meetingError,type MeetingStatus,type MeetingReadiness} from "./meetings";
 import AnimatedOrb from "./components/AnimatedOrb";
 import ShortcutCapture from "./components/ShortcutCapture";
 import {
@@ -84,9 +89,10 @@ import echoLogoMark from "./assets/app-tray-icon.png";
 import "./App.css";
 
 const Settings = lazy(() => import("./components/Settings"));
+const MeetingsPanel = lazy(() => import("./components/MeetingsPanel"));
 
 type AppState = "idle" | "recording" | "processing" | "success" | "copied" | "error";
-type ActiveTab = "onboarding" | "dictate" | "notepad" | "history" | "settings";
+type ActiveTab = "onboarding" | "dictate" | "notepad" | "meetings" | "history" | "settings";
 type AuthStatus =
   | "loading"
   | "signedOut"
@@ -132,7 +138,7 @@ export interface AppConfig {
   cleanup_enabled: boolean;
   input_device: string | null;
   model_provider: "api" | "local";
-  local_model_size: "small" | "medium";
+  local_model_size: LocalModelId;
   local_transcription_threads: number | null;
   sounds_enabled: boolean;
   indicator_sound: string;
@@ -235,6 +241,7 @@ interface GroqReadiness {
 }
 
 interface ModelStatus {
+  supported: boolean;
   downloaded: boolean;
   downloading: boolean;
   file_size_bytes: number;
@@ -756,6 +763,9 @@ function HudPreviewScreen() {
 }
 
 function DockIndicator() {
+  const [meetingStatus,setMeetingStatus]=useState<MeetingStatus>(EMPTY_MEETING_STATUS);
+  const meetingActive=activeMeeting(meetingStatus);
+  useEffect(()=>{if(!HAS_TAURI)return;let disposed=false;void invoke<MeetingStatus>("meeting_status").then(s=>{if(!disposed)setMeetingStatus(s);}).catch(()=>{});const unsubscribe=listen<MeetingStatus>("meeting-status",({payload})=>{if(!disposed)setMeetingStatus(payload);});return()=>{disposed=true;void unsubscribe.then(fn=>fn());};},[]);
   const [mode, setMode] = useState<IndicatorMode>("idle");
   const [appearanceTheme, setAppearanceTheme] = useState<AppearanceTheme>("dark");
   const [shortcutLabel, setShortcutLabel] = useState(MOCK_CONFIG.shortcut);
@@ -793,7 +803,7 @@ function DockIndicator() {
   useEffect(() => {
     if (!HAS_TAURI || !IS_PRIMARY_INDICATOR_WINDOW) return;
     invoke("set_indicator_hover_tracking_enabled", {
-      enabled: platform === "macos" && mode === "idle",
+      enabled: platform === "macos" && mode === "idle" && !meetingActive,
     }).catch(() => {});
 
     return () => {
@@ -801,13 +811,13 @@ function DockIndicator() {
         invoke("set_indicator_hover_tracking_enabled", { enabled: false }).catch(() => {});
       }
     };
-  }, [mode, platform]);
+  }, [mode, platform, meetingActive]);
 
   useEffect(() => {
     if (!HAS_TAURI || !IS_PRIMARY_INDICATOR_WINDOW) return;
 
     let cancelled = false;
-    const targetSize = indicatorSizeForMode(mode, expanded, liveTranscript);
+    const targetSize = meetingActive ? {width:420,height:86} : indicatorSizeForMode(mode, expanded, liveTranscript);
     const collapsingIdle =
       mode === "idle" &&
       !expanded &&
@@ -876,11 +886,11 @@ function DockIndicator() {
         clearTimeout(collapseTimer);
       }
     };
-  }, [mode, expanded, liveTranscript, platform]);
+  }, [mode, expanded, liveTranscript, platform, meetingActive]);
 
   useEffect(() => {
     if (!HAS_TAURI || !IS_PRIMARY_INDICATOR_WINDOW) return;
-    if (mode !== "idle") return;
+    if (mode !== "idle" || meetingActive) return;
 
     const refreshPosition = async () => {
       try {
@@ -907,7 +917,7 @@ function DockIndicator() {
     return () => {
       void unlistenPromise.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [mode]);
+  }, [mode, meetingActive]);
 
   useEffect(() => {
     if (!HAS_TAURI) {
@@ -1175,7 +1185,7 @@ function DockIndicator() {
         }
       }}
     >
-      <AudioHudIndicator
+      {meetingActive ? <MeetingHud status={meetingStatus} onError={error=>{void invoke("show_meetings");void emit("meeting-action-error",meetingError(error));}}/> : <AudioHudIndicator
         state={hudState}
         expanded={mode === "idle" && expanded}
         level={level}
@@ -1200,7 +1210,8 @@ function DockIndicator() {
             console.error("Failed to open standalone Notepad from HUD:", error);
           });
         }}
-      />
+        onMeetingAction={()=>{void (async()=>{try{const ready=await invoke<MeetingReadiness>("meeting_readiness");await invoke("start_meeting",{mode:ready.settings.mode});}catch(error){await invoke("show_meetings");await emit("meeting-action-error",meetingError(error));}})();}}
+      />}
     </div>
   );
 }
@@ -1210,6 +1221,7 @@ function MainApp() {
   const reduceMotion = useReducedMotion() ?? false;
   const [appState, setAppState] = useState<AppState>("idle");
   const [activeTab, setActiveTab] = useState<ActiveTab>("dictate");
+  useEffect(()=>{if(!HAS_TAURI)return;const unsubscribe=listen("show-meetings",()=>setActiveTab("meetings"));return()=>{void unsubscribe.then(fn=>fn());};},[]);
   const [transcript, setTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -1226,6 +1238,7 @@ function MainApp() {
   const [entitlementChecking, setEntitlementChecking] = useState(false);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [shortcutError, setShortcutError] = useState("");
+  const [localModelPreparation, setLocalModelPreparation] = useState("");
   const [lastPerformance, setLastPerformance] = useState<DictationPerformancePayload[]>([]);
   const [appearancePreview, setAppearancePreview] = useState<AppearanceTheme | null>(null);
   const [onboardingCompletionVisible, setOnboardingCompletionVisible] = useState(false);
@@ -1430,6 +1443,7 @@ function MainApp() {
         ...FREE_ENTITLEMENT,
         source: cached.source === "free" ? "offline" : "offline_stale",
       };
+      if(HAS_TAURI)await invoke("activate_offline_meetings_license",{userId:effectiveUserId}).catch(()=>{});
       setEntitlement(offlineEntitlement);
       setEntitlementMessage(formatErrorMessage(e));
       return offlineEntitlement;
@@ -1482,7 +1496,7 @@ function MainApp() {
       const status = await invoke<ModelStatus>("check_model_status", {
         modelSize: cfg.local_model_size,
       });
-      return status.downloaded && !status.integrity_error;
+      return status.supported && status.downloaded && !status.integrity_error;
     } catch {
       return false;
     }
@@ -1673,7 +1687,7 @@ function MainApp() {
               setErrorMsg(ONLINE_PRO_REQUIRED_MESSAGE);
             } else {
               setErrorMsg(
-                "No internet connection. Reconnect to verify Echo Pro, or download a local Whisper model before dictating offline."
+                "No internet connection. Reconnect to verify Echo Pro, or download a local model before dictating offline."
               );
               setActiveTab("settings");
               return false;
@@ -1760,6 +1774,7 @@ function MainApp() {
 
     try {
       recordingStartedAtRef.current = null;
+      setLocalModelPreparation("");
       const rawText = await invoke<string>("transcribe_audio", { audioPath });
       const finalText = transcriptTextOrThrow(rawText);
 
@@ -2363,7 +2378,12 @@ function MainApp() {
         notepadFocusedRef.current = event.payload;
       }),
 
+      listenSafely<string>("local-model-preparing", (event) => {
+        setLocalModelPreparation(event.payload);
+      }),
+
       listenSafely<DictationPerformancePayload>("dictation-performance", (event) => {
+        if (event.payload.phase === "transcribe") setLocalModelPreparation("");
         setLastPerformance((prev) => {
           if (event.payload.phase === "transcribe") {
             return [event.payload];
@@ -2936,6 +2956,7 @@ function MainApp() {
             label="History"
             onClick={() => setActiveTab("history")}
           />
+          <NavButton active={activeTab === "meetings"} icon={<Users/>} label="Meetings" onClick={()=>setActiveTab("meetings")}/>
         </nav>
 
         <div className="sidebar-footer">
@@ -2967,6 +2988,7 @@ function MainApp() {
                 {activeTab === "dictate" && (
                   <DictatePanel
                     appState={appState}
+                    localModelPreparation={localModelPreparation}
                     config={config}
                     errorMsg={errorMsg}
                     setupStatus={setupStatus}
@@ -2991,6 +3013,7 @@ function MainApp() {
                   />
                 )}
                 {activeTab === "notepad" && <NotepadPanel />}
+                {activeTab === "meetings" && <Suspense fallback={<p role="status">Loading Meetings…</p>}><MeetingsPanel onAccount={()=>setActiveTab("settings")} /></Suspense>}
                 {activeTab === "settings" && config && (
                   <Suspense fallback={<SettingsFallback />}>
                     <Settings
@@ -4187,6 +4210,7 @@ function ShortcutKeys({ shortcut }: { shortcut: string }) {
 
 function DictatePanel({
   appState,
+  localModelPreparation,
   config,
   errorMsg,
   setupStatus,
@@ -4201,6 +4225,7 @@ function DictatePanel({
   onRefresh,
 }: {
   appState: AppState;
+  localModelPreparation: string;
   config: AppConfig | null;
   errorMsg: string;
   setupStatus: SetupStatus | null;
@@ -4216,8 +4241,9 @@ function DictatePanel({
 }) {
   const reduceMotion = useReducedMotion() ?? false;
   const needsSetup = Boolean(setupStatus && !setupStatus.ready);
-  const localPreviewMessage =
-    "On-device preview: Whisper runs privately on this computer. Cloud cleanup is not used, so wording stays closer to what you said.";
+  const localPreviewMessage = config?.local_model_size === "bark-3-clean"
+    ? "Bark runs privately on this Mac and removes fillers, false starts and repeated words. English only."
+    : "Whisper runs privately on this computer. Cloud cleanup is not used, so wording stays closer to what you said.";
   const customerMessage = presentHomeMessage(errorMsg);
   const showMessageDetails =
     Boolean(errorMsg) && customerMessage !== errorMsg && !errorMsg.toLowerCase().includes("gsk_");
@@ -4245,7 +4271,7 @@ function DictatePanel({
             transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
           >
             <h2 className="dictate-hero__title">{stateTitle(appState)}</h2>
-            <p className="dictate-hero__hint">{stateHint(appState, config?.shortcut, errorMsg)}</p>
+            <p className="dictate-hero__hint">{appState === "processing" && localModelPreparation ? localModelPreparation : stateHint(appState, config?.shortcut, errorMsg)}</p>
           </motion.div>
         </AnimatePresence>
 
@@ -4362,8 +4388,8 @@ function DictationPerformanceCard({
   if (!transcribe) return null;
 
   const providerLabel =
-    transcribe.provider === "local"
-      ? `Local ${transcribe.localModelSize ?? config?.local_model_size ?? "Whisper"}`
+    transcribe.provider.startsWith("local")
+      ? localModelName(transcribe.localModelSize ?? config?.local_model_size)
       : transcribe.model ?? "Cloud";
   const cacheLabel =
     transcribe.modelCacheHit == null
@@ -4372,7 +4398,7 @@ function DictationPerformanceCard({
         ? "Model cached"
         : "Loaded model";
   const warning =
-    transcribe.provider === "local" &&
+    transcribe.provider.startsWith("local") &&
     (transcribe.localModelSize ?? config?.local_model_size) === "medium" &&
     !transcribe.modelCacheHit;
 
@@ -4391,11 +4417,11 @@ function DictationPerformanceCard({
             value={transcribe.speechDetected ? "Detected" : "Borderline"}
           />
         )}
-        {transcribe.provider === "local" ? (
+        {transcribe.provider.startsWith("local") ? (
           <>
             <PerformanceMetric label="Model load" value={formatDurationMs(transcribe.modelLoadMs)} />
             <PerformanceMetric label="Inference" value={formatDurationMs(transcribe.inferenceMs)} />
-            <PerformanceMetric label="Threads" value={transcribe.threadCount ? `${transcribe.threadCount}` : "Auto"} />
+            {transcribe.threadCount != null && <PerformanceMetric label="Threads" value={`${transcribe.threadCount}`} />}
           </>
         ) : (
           <PerformanceMetric label="Cloud" value={formatDurationMs(transcribe.cloudTranscribeMs)} />
@@ -4853,7 +4879,7 @@ function NotepadPanel() {
 
       const cfg = await invoke<AppConfig>("get_config");
       if (cfg.model_provider === "api" && !cfg.groq_api_key) {
-        setError("Enter a Groq API key or switch to a local Whisper model before dictating into Notepad.");
+        setError("Enter a Groq API key or switch to a local model before dictating into Notepad.");
         return;
       }
 
@@ -5495,7 +5521,7 @@ function StandaloneNotepadWindow() {
 
       const cfg = await invoke<AppConfig>("get_config");
       if (cfg.model_provider === "api" && !cfg.groq_api_key) {
-        setError("Enter a Groq API key or switch to a local Whisper model before dictating into Notepad.");
+        setError("Enter a Groq API key or switch to a local model before dictating into Notepad.");
         return;
       }
 

@@ -30,7 +30,45 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Build and test native Bark helper
+        run: |
+          swift test --package-path native/bark
+          node scripts/build-bark-helper.mjs
+
+      - name: Build and test Meetings helpers
+        run: |
+          swift test --package-path native/capture -c release
+          node scripts/build-meeting-helpers.mjs --release
+          node scripts/test-meetings-license.mjs
+
       - name: Check Rust
         working-directory: src-tauri
         run: cargo check --locked
 
+      - name: Test Rust library
+        working-directory: src-tauri
+        run: cargo test --locked --lib
+
+  windows-check:
+    name: Check Windows compatibility
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run build
+      - name: Build Windows Meetings helpers
+        run: node scripts/build-meeting-helpers.mjs --release
+      - name: Check Rust without the macOS helper
+        working-directory: src-tauri
+        run: cargo check --locked
+
+      - name: Test Windows Rust library
+        working-directory: src-tauri
+        run: cargo test --locked --lib
+      - name: Test licence signing
+        run: node scripts/test-meetings-license.mjs

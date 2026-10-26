@@ -28,7 +28,8 @@ impl AppError {
         Self::new(
             "missing_local_model",
             format!(
-                "Download the Whisper {model_size} model in Settings before using local dictation."
+                "Download {} in Settings before using local dictation.",
+                crate::local_models::name(model_size)
             ),
             false,
             Some("Open Settings"),

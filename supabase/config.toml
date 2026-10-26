@@ -12,3 +12,5 @@ verify_jwt = true
 
 [functions.stripe-webhook]
 verify_jwt = false
+[functions.get-meetings-license]
+verify_jwt = true

@@ -438,6 +438,23 @@ mod tests {
     }
 
     #[test]
+    fn local_model_ids_round_trip_without_changing_legacy_defaults() {
+        let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("local_model_size");
+        let old: AppConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(old.local_model_size, "small");
+        for model in ["small", "medium", "bark-3-clean"] {
+            value["local_model_size"] = serde_json::json!(model);
+            let config: AppConfig = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(config.local_model_size, model);
+            assert_eq!(
+                serde_json::to_value(config).unwrap()["local_model_size"],
+                model
+            );
+        }
+    }
+
+    #[test]
     fn load_old_config_defaults_local_transcription_threads() {
         let cfg: AppConfig = serde_json::from_str(
             r#"{

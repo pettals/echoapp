@@ -23,8 +23,8 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Supabase-backed authentication with Google OAuth and email/password sign-up, login, logout, and session restore.
 - Echo Pro lifetime unlock with Stripe-hosted Checkout, Supabase-backed online entitlement verification, billing deep-link return, and in-app restore.
 - macOS-first polish and QA.
-- Groq provider and local Whisper provider.
-- Download and manage local small and medium Whisper models.
+- Groq provider and local transcription with Whisper or Bark 3 Clean.
+- Download and manage local small and medium Whisper models, plus Bark 3 Clean on Apple Silicon/macOS 15+.
 - Transcription history with copy, delete, and clear.
 - A task-first Dictate screen with collapsed aggregate insights for all-time word count, rolling WPM, day streak, next milestone progress, and one-time in-app milestone celebrations.
 - Local Notepad for autosaved notes, markdown preview, copy/delete, and note-specific dictation insertion.
@@ -32,13 +32,15 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Tray/menu bar app lifecycle.
 - Production packaging, signing/notarization plan, and release checklist.
 
+- Local-first Pro Meetings: microphone/system-audio capture, local transcription, Qwen meeting notes, local library, and optional explicitly selected user-funded AI providers on Mac and Windows. See `docs/MEETINGS.md`.
+
 ## Out Of Scope For v1
 
 - Mobile builds.
 - Multi-language UI.
 - Team accounts/sync.
 - Passwordless magic-link login, SSO/SAML, multi-factor authentication, and subscriptions.
-- Full local LLM cleanup unless added after the core app is stable.
+- General-purpose local LLM dictation cleanup. Local LLM meeting notes are part of Meetings.
 
 ## Product Requirements
 
@@ -50,7 +52,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Users must be able to sign out from Settings, after which local-only data remains on device unless a later sync feature explicitly changes that behavior.
 - Authentication must not weaken local privacy expectations: transcript history, Notepad notes, and dictation insights remain local in v1.
 - Echo Pro must be a lifetime unlock purchased through Stripe-hosted Checkout in a browser, with `echo://billing/complete` and `echo://billing/cancel` return links plus app-side checkout-session confirmation, polling, and restore entitlement flows after checkout.
-- Echo Pro unlocks only two v1 features: unlimited local transcript history and the cloud provider flow where users add their own Groq API key.
+- Echo Pro unlocks unlimited local transcript history, user-funded cloud dictation, and Meetings. Meetings requires a server-signed perpetual local licence and supports offline recording and notes after initial verification. Existing dictation/history authorization rules remain separate.
 - Free users must retain local dictation, local Whisper, Notepad, insights, and up to 100 local history items.
 - Free users who click locked cloud or unlimited-history affordances must see a compact paywall prompt with a clear online checkout action and restore action.
 - Paid entitlement must be verified through Supabase during the current online session before Pro features run; any local entitlement cache is display/diagnostic context only, not authorization.
@@ -67,6 +69,7 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - Dictation insights must store only aggregate usage stats, not transcript text, and must remain independent of transcript history retention.
 - Notepad notes must remain local, autosave while editing, and support dictation insertion without triggering external paste automation.
 - Local mode must explain model sizes, disk use, download state, and offline behavior.
+- Bark 3 Clean must remain free, English-only, and fully offline after its verified 447,420,698-byte Core ML download. Explain built-in filler removal and first-use preparation; preserve existing local model choices and defaults. Unsupported platforms keep Whisper with clear Bark requirements.
 - Local mode must avoid repeated model loads during an app session, expose a conservative CPU usage control, and show safe timing diagnostics that exclude transcripts, audio content, paths, and secrets.
 - Windows must not present macOS-only affordances as working features.
 - The desktop UI should use the custom Echo design system: clean light/dark content themes, a persistent dark purple-pink gradient sidebar with white navigation, native system typography, graphite and cool-neutral grouped surfaces, monochrome primary actions, cohesive `46px` form controls, compact desktop density, and reduced-motion-aware transitions. Workspace styling must remain isolated from the Dynamic Island HUD.
@@ -84,3 +87,15 @@ The primary audience is macOS users who frequently dictate into chat, docs, emai
 - API key storage must use OS secure storage rather than plain JSON.
 - Stripe webhook correctness is required as the async entitlement grant path; duplicate, failed, or spoofed webhook/session confirmations must not incorrectly unlock users.
 - Release process needs CI, signed builds, an update strategy, and a QA matrix.
+
+## Meetings requirements
+
+- Meetings runs on macOS 13+ and Windows 10/11 x64; other Echo features keep their current platform minimums.
+- Record online or in-person meetings from the main app or expanded HUD, with pause/resume, levels, visible duration and a four-hour active-recording cap.
+- Transcribe locally with Bark Clean where supported and Whisper elsewhere; default note generation uses a verified Qwen3.5-4B Q4_K_M download and a bundled native runtime.
+- Preserve timestamped original ASR independently of generated notes. Assembled transcripts conservatively deduplicate overlapping chunks/playback echo without identifying individual speakers.
+- Store the meeting library and processing state transactionally in local SQLite, independent of transcript-history settings. Delete audio after durable transcription; retain only unprocessed recovery chunks for recovery/discard.
+- Show overview, discussion, decisions, grounded action items and open questions, with source references. Support search, rename/edit, copy, Markdown/text export and permanent deletion.
+- Keep content local unless the user saves their own provider key, explicitly selects OpenAI/Gemini/Anthropic and accepts the transcript transmission disclosure. No automatic cloud fallback or Echo AI proxy is allowed.
+- Keep provider keys in OS secure storage. Existing meetings remain readable/exportable/deletable without Pro. Signed local Meetings licences survive offline use and are removed after an authoritative online revocation.
+- Release remains gated on licence-issuer provisioning, both platform packages, real-device capture/permission QA and meeting-note quality evaluation.

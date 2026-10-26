@@ -55,6 +55,8 @@
 - [ ] Add UI smoke coverage for free paywall prompts, checkout opening, billing deep-link return/cancel, restore purchase, paid-state rendering, online-required Pro verification, and local fallback when connectivity drops.
 - [x] Add local model checksum/integrity validation and clearer disk-size messaging; partial download cleanup and retry UI are partially in place.
 - [x] Add local transcription performance hardening: cached Whisper model reuse, calmer CPU thread control, safe timing diagnostics, and recording temp-file cleanup.
+- [x] Add Bark 3 Clean model catalog, verified multi-file downloads, native Core ML helper, free local routing, platform gating, and model-aware setup/diagnostics.
+- [ ] Complete Bark clean-machine signed-app QA: download/retry/remove, hotkey dictation, Notepad, paste/copy fallback, disabled/bounded history, cloud fallback, and Intel/older macOS gating. Windows CI compilation and Windows device QA remain separate gates.
 - [x] Add history clear confirmation and verify disabled-history UX.
 - [x] Add transcription cleanup behavior documentation and preview copy for local mode.
 - [x] Add local Notepad MVP with autosaved notes, markdown preview, and note-specific dictation insertion.
@@ -96,3 +98,18 @@
 - macOS target apps: Notes, Safari, Chrome, Slack, Mail, Messages, VS Code, and browser text fields.
 - Windows first run: shortcut, recording, paste/copy fallback, history, settings, local model download/transcription, and installer launch.
 - Release checks: build production bundles on macOS and Windows and test on clean machines/accounts.
+
+
+## Local-first Meetings for Echo Pro
+
+- [x] Local SQLite meeting library, original/assembled transcripts, grounded notes, search, edit, export, delete and recovery state.
+- [x] Dedicated recording coordinator, app/HUD entry points, pause/resume, bounded overlapping capture and four-hour limit.
+- [x] Native macOS 13+ audio capture and Windows WASAPI source; Bark/Whisper routing separate from dictation preferences.
+- [x] Pinned Qwen3.5-4B Q4_K_M manifest and bundled llama.cpp helper with local structured output, cancellation and hierarchical summaries.
+- [x] Optional explicit BYOK OpenAI, Gemini and Anthropic adapters; secure keys, connection tests and no automatic cloud fallback.
+- [x] Signed perpetual Meetings-licence issuer/verifier and offline account restoration, with fail-closed authorization.
+- [ ] Provision signing keys and deploy the issuer to the correct Echo Supabase account; current connected account does not expose the Echo project.
+- [x] Pass local Qwen evaluation on a simulated four-hour transcript with key facts at both ends and citations; verify bounded-chunk capture simulation.
+- [x] Build a universal macOS debug app with Bark, capture and notes helpers, attribution resources, macOS 13 helper targets, and a passing local nested ad hoc signature check.
+- [ ] Complete Developer ID signing/notarization and clean-device helper launch for release.
+- [ ] Complete real Mac/Windows device, permission, Bluetooth/sleep, four-hour endurance and clean-machine QA before publishing. Windows source/CI checks alone are not a release pass.

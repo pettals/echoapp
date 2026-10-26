@@ -28,6 +28,12 @@ Recommended workflow input:
 
 The workflow runs the frontend build, Rust check, then Tauri bundling for `app,dmg` with the universal Apple target. Keep the release as a draft until the downloaded `.dmg` passes clean-machine QA.
 
+The macOS build requires Swift 6.2+ and prepares a universal `echo-bark` helper before packaging. The macOS-only Tauri config embeds it as external code, alongside `FluidAudio_FluidAudio.bundle` and `BarkNotices`. Verify `codesign --verify --deep --strict Echo.app`, `codesign --verify --strict Echo.app/Contents/MacOS/echo-bark`, and `lipo -archs Echo.app/Contents/MacOS/echo-bark` (arm64 and x86_64). Do not raise the main app's minimum OS to the helper's macOS 15 requirement. Bark is enabled only on Apple Silicon/macOS 15+; its model downloads remain separate from the installer.
+
+Meetings also bundles universal `echo-capture` and `echo-notes` helpers, plus `MeetingNotices`. Verify the signatures and both architectures of these nested executables. The capture and notes helpers target macOS 13+; confirm that the enclosing app still launches on its existing minimum OS. Models are downloaded separately from the installer and verified against pinned SHA-256 manifests.
+
+Before either platform is released with Meetings, provision the Echo Supabase project's Ed25519 issuer secrets and check in its public verification key (`docs/MEETINGS.md`). The release workflow refuses an empty key ring. Test a verified purchase, offline restart, account mismatch, signature tampering and verified revocation. No private signing key belongs in this repository or app. Complete the Meetings section of `MANUAL_QA.md`, including the blocked-network and four-hour tests.
+
 ## macOS QA Gate
 
 Before publishing a macOS release, verify on a clean macOS user account:
@@ -39,13 +45,13 @@ Before publishing a macOS release, verify on a clean macOS user account:
 - Paste works in Notes, Safari or Chrome, Slack, Mail, Messages, VS Code, and an unfocused text field.
 - Clipboard fallback preserves the transcript when paste automation is unavailable.
 - Groq mode transcribes and optionally cleans up text.
-- Local mode downloads a verified model and returns raw local transcripts.
+- Local Whisper downloads a verified model and returns raw transcripts; Bark returns locally cleaned English transcripts and passes its section of `MANUAL_QA.md`.
 - History save, disabled-history behavior, delete, copy, and guarded clear-all work.
 - Tray/menu commands open, start/stop, settings, and quit correctly.
 
-## Windows Signing And MSI Status
+## Windows installer candidate and signing
 
-Windows release signing is intentionally a placeholder until real Windows QA is available. Do not publish Windows installers from macOS-only validation.
+The Windows workflow builds an unsigned NSIS installer candidate with `echo-capture` and `echo-notes` for review. It does not publish that candidate as a customer release. Sign and publish only after real Windows device testing and the Meetings licence gate pass.
 
 Before enabling Windows release builds, complete and document:
 
@@ -57,7 +63,7 @@ Before enabling Windows release builds, complete and document:
 - Installer launch on a clean Windows machine.
 - Code-signing certificate choice and storage.
 - Timestamp URL and certificate thumbprint.
-- MSI or NSIS target decision.
+- NSIS installation and uninstall on a clean account.
 
 Expected future Windows signing secrets:
 

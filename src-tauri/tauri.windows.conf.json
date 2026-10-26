@@ -1,11 +1,22 @@
 {
   "bundle": {
-    "targets": ["nsis"],
+    "externalBin": [
+      "binaries/echo-notes",
+      "binaries/echo-capture"
+    ],
+    "resources": {
+      "../native/notes/Notices/": "MeetingNotices/"
+    },
+    "targets": [
+      "nsis"
+    ],
     "windows": {
       "nsis": {
         "installMode": "perMachine",
         "displayLanguageSelector": false,
-        "languages": ["English"]
+        "languages": [
+          "English"
+        ]
       }
     }
   }
