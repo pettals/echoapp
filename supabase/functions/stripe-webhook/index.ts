@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { isCheckoutFulfillmentEvent, isCheckoutSessionPaid } from "../_shared/checkout.ts";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -81,7 +82,7 @@ Deno.serve(async (req) => {
     if (duplicateReadError) throw duplicateReadError;
     if (existingEvent) return jsonResponse({ received: true, duplicate: true });
 
-    if (event.type !== "checkout.session.completed") {
+    if (!isCheckoutFulfillmentEvent(event.type)) {
       const { error: ignoredInsertError } = await supabase.from("stripe_webhook_events").insert({
         event_id: event.id,
         event_type: event.type,
@@ -93,8 +94,7 @@ Deno.serve(async (req) => {
 
     const session = event.data?.object ?? {};
     const userId = session.metadata?.supabase_user_id ?? session.client_reference_id;
-    const paid = session.payment_status === "paid" || session.status === "complete";
-    if (!userId || !paid) {
+    if (!userId || !isCheckoutSessionPaid(session)) {
       const { error: ignoredInsertError } = await supabase.from("stripe_webhook_events").insert({
         event_id: event.id,
         event_type: event.type,

@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { isCheckoutSessionPaid } from "../_shared/checkout.ts";
 
 const STRIPE_API_VERSION = "2026-02-25.clover";
 const PRO_LEASE_MINUTES = 5;
@@ -79,8 +80,7 @@ Deno.serve(async (req) => {
     const sessionUserId = session.metadata?.supabase_user_id ?? session.client_reference_id;
     if (sessionUserId !== userId) return jsonResponse({ error: "Checkout session does not belong to this account" }, 403);
 
-    const paid = session.payment_status === "paid" || session.status === "complete";
-    if (!paid) return jsonResponse({ error: "Checkout is not paid yet" }, 409);
+    if (!isCheckoutSessionPaid(session)) return jsonResponse({ error: "Checkout is not paid yet" }, 409);
 
     if (session.customer) {
       const { error: customerError } = await supabase.from("billing_customers").upsert({
